@@ -1,12 +1,7 @@
 class Kanvu {
     constructor() {
         this.tasks = [];
-        this.columns = [
-            { id: 'backlog', title: 'Backlog', order: 0, color: '#a855f7' },
-            { id: 'todo', title: 'To Do', order: 1, color: '#ef4444' },
-            { id: 'in-progress', title: 'In Progress', order: 2, color: '#eab308' },
-            { id: 'done', title: 'Done', order: 3, color: '#22c55e' }
-        ];
+        this.columns = [];
         this.currentTaskId = null;
         this.currentColumn = 'todo';
         this.drag = null;
@@ -15,8 +10,11 @@ class Kanvu {
         this.currentBoardId = null; // Track current board ID
         this.currentBoardName = 'My Projects';
         this.savedBoards = {};
+        this.boardOrder = {};
+        this.trash = {};
         this.currentColumnLayout = 4;
         this.currentView = 'columns';
+        this.storage = new LocalStorageAdapter();
         
         this.init();
     }
@@ -698,65 +696,16 @@ class Kanvu {
         }
         
         // Migrate old data if it exists
-        this.migrateOldData();
+        // this.migrateOldData();
         
         // Ensure we always have at least a default board
         if (Object.keys(this.savedBoards).length === 0) {
-            const defaultBoardId = this.generateBoardId('My Projects');
+            const defaultBoardId = this.generateBoardId('Untitled Board');
             const now = new Date().toISOString();
             this.savedBoards[defaultBoardId] = {
                 id: defaultBoardId,
-                name: 'My Projects',
-                tasks: [
-                    {
-                        id: 'demo-1',
-                        title: 'Kanban App Project',
-                        description: 'Build Cool Kanban app with easy customization!',
-                        column: 'backlog',
-                        difficulty: 2,
-                        progress: 0,
-                        priority: 'low',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    },
-                    {
-                        id: 'demo-2',
-                        title: 'College Assignment',
-                        description: 'Deadline on 30 Sept',
-                        column: 'todo',
-                        difficulty: 1,
-                        progress: 0,
-                        priority: 'medium',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    },
-                    {
-                        id: 'demo-3',
-                        title: 'Intern Project',
-                        description: 'Debugging backend system',
-                        column: 'in-progress',
-                        difficulty: 3,
-                        progress: 40,
-                        priority: 'high',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    },
-                    {
-                        id: 'demo-4',
-                        title: 'Capstone Project',
-                        description: 'Deployed',
-                        column: 'done',
-                        difficulty: 4,
-                        progress: 100,
-                        priority: 'high',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    }
-                ],
+                name: 'Untitled Board',
+                tasks: [],
                 columns: [
                     { id: 'backlog', title: 'Backlog', order: 0, color: '#a855f7' },
                     { id: 'todo', title: 'To Do', order: 1, color: '#ef4444' },
@@ -770,65 +719,65 @@ class Kanvu {
         }
     }
     
-    migrateOldData() {
-        // Check if there's old data in kanban-board
-        const oldData = localStorage.getItem('kanban-board');
-        if (oldData) {
-            try {
-                const data = JSON.parse(oldData);
-                const boardName = data.name || 'My Board';
+    // migrateOldData() {
+    //     // Check if there's old data in kanban-board
+    //     const oldData = localStorage.getItem('kanban-board');
+    //     if (oldData) {
+    //         try {
+    //             const data = JSON.parse(oldData);
+    //             const boardName = data.name || 'My Board';
                 
-                // Check if we need to migrate this data
-                let needsMigration = true;
-                for (const boardId in this.savedBoards) {
-                    if (this.savedBoards[boardId].name === boardName) {
-                        needsMigration = false;
-                        break;
-                    }
-                }
+    //             // Check if we need to migrate this data
+    //             let needsMigration = true;
+    //             for (const boardId in this.savedBoards) {
+    //                 if (this.savedBoards[boardId].name === boardName) {
+    //                     needsMigration = false;
+    //                     break;
+    //                 }
+    //             }
                 
-                if (needsMigration && data.tasks && data.tasks.length > 0) {
-                    // Create a new board with the old data
-                    const migratedBoardId = this.generateBoardId(boardName);
+    //             if (needsMigration && data.tasks && data.tasks.length > 0) {
+    //                 // Create a new board with the old data
+    //                 const migratedBoardId = this.generateBoardId(boardName);
                     
-                    // Try to get columns from old storage
-                    let columns = [
-                        { id: 'todo', title: 'To Do', order: 0 },
-                        { id: 'in-progress', title: 'In Progress', order: 1 },
-                        { id: 'done', title: 'Done', order: 2 }
-                    ];
-                    const oldColumns = localStorage.getItem('kanban-columns');
-                    if (oldColumns) {
-                        try {
-                            columns = JSON.parse(oldColumns);
-                        } catch (e) {
-                            // Use default columns
-                        }
-                    }
+    //                 // Try to get columns from old storage
+    //                 let columns = [
+    //                     { id: 'todo', title: 'To Do', order: 0 },
+    //                     { id: 'in-progress', title: 'In Progress', order: 1 },
+    //                     { id: 'done', title: 'Done', order: 2 }
+    //                 ];
+    //                 const oldColumns = localStorage.getItem('kanban-columns');
+    //                 if (oldColumns) {
+    //                     try {
+    //                         columns = JSON.parse(oldColumns);
+    //                     } catch (e) {
+    //                         // Use default columns
+    //                     }
+    //                 }
                     
-                    this.savedBoards[migratedBoardId] = {
-                        id: migratedBoardId,
-                        name: boardName,
-                        tasks: data.tasks,
-                        columns: columns,
-                        lastModified: data.lastUpdated || new Date().toISOString(),
-                        createdAt: new Date().toISOString()
-                    };
-                    this.saveBoardsToStorage([migratedBoardId]);
+    //                 this.savedBoards[migratedBoardId] = {
+    //                     id: migratedBoardId,
+    //                     name: boardName,
+    //                     tasks: data.tasks,
+    //                     columns: columns,
+    //                     lastModified: data.lastUpdated || new Date().toISOString(),
+    //                     createdAt: new Date().toISOString()
+    //                 };
+    //                 this.saveBoardsToStorage([migratedBoardId]);
                     
-                    // Set as current board
-                    localStorage.setItem('kanban-current-board-id', migratedBoardId);
-                }
+    //                 // Set as current board
+    //                 localStorage.setItem('kanban-current-board-id', migratedBoardId);
+    //             }
                 
-                // Clean up old storage
-                localStorage.removeItem('kanban-board');
-                localStorage.removeItem('kanban-columns');
-                localStorage.removeItem('kanban-last-save');
-            } catch (e) {
-                console.error('Failed to migrate old data:', e);
-            }
-        }
-    }
+    //             // Clean up old storage
+    //             localStorage.removeItem('kanban-board');
+    //             localStorage.removeItem('kanban-columns');
+    //             localStorage.removeItem('kanban-last-save');
+    //         } catch (e) {
+    //             console.error('Failed to migrate old data:', e);
+    //         }
+    //     }
+    // }
     
     generateBoardId(name) {
         // Generate a unique ID based on name and timestamp
@@ -840,7 +789,7 @@ class Kanvu {
         this.currentBoardId = localStorage.getItem('kanban-current-board-id');
         
         if (!this.currentBoardId || !this.savedBoards[this.currentBoardId]) {
-            // Use the first board or create default
+            // Use the first board if invalid board
             this.currentBoardId = Object.keys(this.savedBoards)[0];
             localStorage.setItem('kanban-current-board-id', this.currentBoardId);
         }
@@ -850,9 +799,10 @@ class Kanvu {
             this.currentBoardName = board.name;
             this.tasks = board.tasks || [];
             this.columns = board.columns || [
-                { id: 'todo', title: 'To Do', order: 0 },
-                { id: 'in-progress', title: 'In Progress', order: 1 },
-                { id: 'done', title: 'Done', order: 2 }
+                { id: 'backlog', title: 'Backlog', order: 0, color: '#a855f7' },
+                { id: 'todo', title: 'To Do', order: 1, color: '#ef4444' },
+                { id: 'in-progress', title: 'In Progress', order: 2, color: '#eab308' },
+                { id: 'done', title: 'Done', order: 3, color: '#22c55e' }
             ];
             this.markSaved(board.lastModified);
         }
@@ -1061,11 +1011,7 @@ class Kanvu {
             this.currentBoardId = boardId;
             this.currentBoardName = board.name;
             this.tasks = board.tasks || [];
-            this.columns = board.columns || [
-                { id: 'todo', title: 'To Do', order: 0 },
-                { id: 'in-progress', title: 'In Progress', order: 1 },
-                { id: 'done', title: 'Done', order: 2 }
-            ];
+            this.columns = board.columns || this.defaultColumns();
             
             // Update current board ID in storage
             localStorage.setItem('kanban-current-board-id', boardId);
@@ -1326,7 +1272,7 @@ class Kanvu {
             </details>`;
     }
 
-    renderSavedBoardsList() {
+    renderSavedBoardsList() { // I think this no longer used ?
         const boardIds = Object.keys(this.savedBoards).filter(id => id !== this.currentBoardId);
         
         if (boardIds.length === 0) {
@@ -1424,11 +1370,7 @@ class Kanvu {
             this.currentBoardId = newBoardId;
             this.currentBoardName = boardName;
             this.tasks = [];
-            this.columns = [
-                { id: 'todo', title: 'To Do', order: 0 },
-                { id: 'in-progress', title: 'In Progress', order: 1 },
-                { id: 'done', title: 'Done', order: 2 }
-            ];
+            this.columns = this.defaultColumns();
             
             // Save the new board
             this.saveCurrentBoard();
@@ -2441,6 +2383,8 @@ class Kanvu {
         const boards = document.getElementById('rail-boards');
         const lanes = document.getElementById('rail-lanes');
         if (!boards || !lanes) return;
+
+        // Render boards
         boards.innerHTML = this.getOrderedBoardIds().map(id => {
             const b = this.savedBoards[id];
             const cur = id === this.currentBoardId;
@@ -2448,11 +2392,15 @@ class Kanvu {
             const n = cur ? this.tasks.filter(t => !t.archived).length : (b.tasks || []).filter(t => !t.archived).length;
             return `<button class="rail-item${cur ? ' on' : ''}" ${cur ? '' : `onclick="kanban.switchToBoard('${id}')"`}><span class="g">${name}</span><em>${n}</em></button>`;
         }).join('');
+
+        // Render stages
         const sorted = [...this.columns].sort((a, b) => a.order - b.order);
         lanes.innerHTML = sorted.map(c => {
             const n = this.tasks.filter(t => t.column === c.id && !t.archived).length;
             return `<div class="rail-item static"><span class="d" style="--c:${c.color || '#8A96AB'}"></span><span class="g">${this.escapeHtml(c.title)}</span><em>${n}</em></div>`;
         }).join('');
+
+
         const active = this.tasks.filter(t => !t.archived);
         const done = active.filter(t => t.progress >= 100).length;
         const summary = document.getElementById('summary');
@@ -2468,6 +2416,8 @@ class Kanvu {
         };
         setBadge('archive-done-button', doneCount);
         setBadge('archived-button', archivedCount);
+
+        // Archive done tasks button
         const doneBtn = document.getElementById('archive-done-button');
         if (doneBtn) {
             doneBtn.classList.toggle('is-idle', !doneCount);
@@ -2475,6 +2425,8 @@ class Kanvu {
             doneBtn.title = t;
             doneBtn.setAttribute('aria-label', t);
         }
+
+        // Archived button
         const arcBtn = document.getElementById('archived-button');
         if (arcBtn) {
             const t = archivedCount ? `Archived cards (${archivedCount})` : 'Archived cards';

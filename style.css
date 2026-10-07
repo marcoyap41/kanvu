@@ -29,7 +29,7 @@ button{cursor:pointer;background:none;border:0}
 .title-input:hover,.title-input:focus{border-bottom-color:var(--line);outline:0}
 .summary{color:var(--mute);font-size:13px;white-space:nowrap}
 .find{width:210px;padding:9px 14px;border:1px solid var(--line);border-radius:999px;background:var(--sf2)}
-.rail-toggle{display:none;font-weight:600}
+.rail-toggle{display:none;font-weight:600;font-size: 30px;align-items:center;justify-content:center;}
 .btn{padding:9px 16px;border-radius:8px;background:var(--ac);color:var(--acx);font-weight:600}
 .btn:hover{filter:brightness(1.08)}
 .btn:disabled{opacity:.7;cursor:default;filter:none}
@@ -55,6 +55,7 @@ button{cursor:pointer;background:none;border:0}
 .column-menu-item:disabled{opacity:.35;cursor:default}
 .column-menu-item.danger{color:#E03131}
 .column-menu-sep{height:1px;margin:4px 6px;background:var(--line)}
+
 /* stage drag and drop */
 .lane-head{cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .lane-head button{cursor:pointer}
@@ -353,8 +354,9 @@ box-shadow:0 1px 3px rgba(0,0,0,.18)}
 .board-item-right{flex:none}
 .board-item-right :is(.board-save-status,.board-stats){white-space:nowrap}
 
+/* Logo adjustment */
 .brand img {
-    width: 24px;
-    height: 30px;
+    width: 30px;
+    height: auto;
     object-fit: contain;
 }

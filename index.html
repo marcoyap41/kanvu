@@ -79,7 +79,7 @@
 
     <div class="stage">
         <header class="bar">
-            <button class="rail-toggle" onclick="toggleRail()" aria-label="Open sidebar">Menu</button>
+            <button class="rail-toggle" onclick="toggleRail()" aria-label="Open sidebar">≡</button>
             <input type="text" class="title-input" id="board-name" placeholder="Untitled board" maxlength="50" aria-label="Board name">
             <span class="summary" id="summary"></span>
             <div class="view-toggle" role="group" aria-label="Board layout">
@@ -96,7 +96,7 @@
                     <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="2" y="3" width="16" height="4" rx="1"/><path d="M3.5 7v8A1.5 1.5 0 0 0 5 16.5h10a1.5 1.5 0 0 0 1.5-1.5V7"/><path d="M7.5 11.5l2 2 3.5-3.5"/></svg><span class="badge" hidden></span>
                 </button>
                 <button type="button" class="icon-btn" id="archived-button" onclick="kanban.openArchiveModal()" title="Archived cards" aria-label="Archived cards">
-                    <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="2" y="3" width="16" height="4" rx="1"/><path d="M3.5 7v8A1.5 1.5 0 0 0 5 16.5h10a1.5 1.5 0 0 0 1.5-1.5V7"/><path d="M8 11h4"/></svg><span class="badge" hidden></span>
+                    <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><rect x="2" y="3" width="16" height="4" rx="1"/><path d="M3.5 7v8A1.5 1.5 0 0 0 5 16.5h10a1.5 1.5 0 0 0 1.5-1.5V7"/><path d="M8 11h4"/></svg>
                 </button>
             </div>
             <button class="btn" id="save-button" onclick="kanban.saveToStorage()">Save</button>
@@ -215,6 +215,7 @@
 <input type="file" id="import-input" accept=".json" style="display:none" onchange="kanban.handleImport(event)">
 <div id="toast" class="toast" role="status"></div>
 
+<script src="storage/local-storage.js"></script>
 <script src="kanban.js"></script>
 <script>
 function toggleRail(){document.body.classList.toggle('rail-open')}
