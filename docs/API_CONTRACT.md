@@ -50,7 +50,36 @@ All routes only ever touch the logged-in user's boards. A board belonging to som
 
 Nest tips: declare `PUT /board-order`, `DELETE /trash` and `POST /boards/import` in a controller where they cannot be shadowed by `:id` routes (the paths above already avoid that, but keep `import` above `:id` if you nest it under `/boards`).
 
-## Not in v1 (the frontend does not need them yet)
+## Settings and Wallpaper
+Appearance configurations and wallpaper images are stored server-side per user account.
+
+| Route | Body | Response |
+|---|---|---|
+| `GET /settings` | none | `200 { settings: UserSettings }`. Returns current theme, density, layout, blur, opacity, autosave settings |
+| `PATCH /settings` | `UpdateSettingsDto` | `200 { settings: UserSettings }`. Partial update of settings |
+| `GET /settings/wallpaper` | none | `200` Streamable binary file (`Content-Type: image/*`), or `404` if none set |
+| `PUT /settings/wallpaper` | `multipart/form-data` with `file` (max 4MB) | `200 { wallpaperVersion: string }`. Uploads/updates wallpaper image |
+| `DELETE /settings/wallpaper` | none | `200` / `204`. Removes custom wallpaper |
+
+### UserSettings shape:
+```json
+{
+  "theme": "black | grey | white",
+  "density": "comfortable | compact | dense",
+  "columnLayout": 3 | 4 | 5,
+  "layout": "columns | lanes",
+  "headerBlur": true | false,
+  "glassLanes": true | false,
+  "glassCards": true | false,
+  "glassOpacity": 20-95,
+  "headerBlurAmount": 0-30,
+  "stageBlurAmount": 0-30,
+  "autosave": true | false,
+  "wallpaperVersion": "ISO string"
+}
+```
+
+## Not in v2 (future enhancements)
 - Conflict detection between devices (two devices editing one board is last-write-wins). Later: send the `lastModified` you loaded and answer `409` when it is older.
-- Pushing changes to other devices. The frontend only reads boards at startup and after sign-in.
-- Syncing appearance settings (theme, wallpaper). They stay on each device.
+- Real-time WebSockets / SSE for pushing changes across devices.
+
