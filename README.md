@@ -81,3 +81,27 @@ Any recent version of Chrome, Edge, Firefox or Safari. The blur effects rely on 
 ## Credits
 
 Original Kanvu by Marco Christian.
+
+## Architecture: guest mode and account mode
+
+Kanvu has two storage modes behind one interface:
+
+- **Account mode** (signed in): boards live on the server through the API (`storage/api-adapter.js`, `storage/auth.js`).
+- **Draft** (signed out, when `config.js` has an `apiUrl`): you can create boards and cards, but nothing is saved. Save asks you to sign in, autosave is off, and a banner says so. The draft lives only in this tab's sessionStorage, so it survives a reload and the Google/GitHub redirect and disappears when the tab closes. On sign in you can add it to your account or discard it; signing out leaves an empty draft.
+- **Guest mode** (no `apiUrl`, for development): boards stay in localStorage and there is no sign-in, as before.
+
+The board code talks only to `kanban.storage`, so it works the same in both modes. `kanban.setStorage(adapter)` switches between them (sign in, sign out). Contracts: [`docs/STORAGE_ADAPTER.md`](docs/STORAGE_ADAPTER.md) and [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md).
+
+| File | Role |
+|---|---|
+| `config.js` | `apiUrl` of the backend. Set = account required (draft when signed out). Empty = guest-only app, no sign-in button |
+| `storage/prefs.js` | Device-only appearance settings |
+| `storage/local-storage.js` | Browser storage adapter: localStorage (guest) or sessionStorage (signed-out draft) |
+| `storage/auth.js` | Sign in, register, token refresh, authenticated requests |
+| `storage/api-adapter.js` | Account storage |
+| `account.js` | Account button, not-saved banner, sign-in dialog, sign out, adding the draft to the account |
+| `app.js` | Chooses account, draft or guest mode at startup; loading and server-error screens |
+| `mock-server/server.js` | In-memory fake backend for developing the frontend |
+| `tests/` | End-to-end tests (jsdom) for both modes |
+
+Try account mode without the real backend: `node mock-server/server.js`, set `apiUrl: 'http://localhost:3000'` in `config.js`, and serve the folder (e.g. `npx serve .`).

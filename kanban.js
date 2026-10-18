@@ -1,12 +1,11 @@
 class Kanvu {
-    constructor() {
+    // options.pickStorage: optional async function that returns the storage adapter to start with
+    // (the app uses it to start in account mode when a login session exists). Default: guest mode.
+    // options.requestSignIn(note): called when a signed-out user tries to save (the app opens the sign-in dialog).
+    constructor(options = {}) {
+        this.options = options;
         this.tasks = [];
-        this.columns = [
-            { id: 'backlog', title: 'Backlog', order: 0, color: '#a855f7' },
-            { id: 'todo', title: 'To Do', order: 1, color: '#ef4444' },
-            { id: 'in-progress', title: 'In Progress', order: 2, color: '#eab308' },
-            { id: 'done', title: 'Done', order: 3, color: '#22c55e' }
-        ];
+        this.columns = [];
         this.currentTaskId = null;
         this.currentColumn = 'todo';
         this.drag = null;
@@ -17,28 +16,34 @@ class Kanvu {
         this.savedBoards = {};
         this.currentColumnLayout = 4;
         this.currentView = 'columns';
-        
-        this.init();
+
+        // Where boards live. Guest mode = temporary draft in sessionStorage. Account mode swaps in ApiAdapter
+        // with the same methods (see setStorage). No data is stored in localStorage.
+        this.storage = new LocalStorageAdapter(sessionStorage, { draft: true });
+        this.boardOrder = []; // in-memory copy of the stored board order
+        this.trash = {};      // in-memory copy of the stored trash
+
+        this.ready = this.init().catch(err => console.error('Kanvu failed to start:', err)); // resolves when the first render is done
     }
 
-    init() {
+    async init() {
         // Load theme preference
-        const savedTheme = localStorage.getItem('kanban-theme') || 'black';
+        const savedTheme = prefs.get('theme') || 'black';
         this.currentTheme = savedTheme;
         this.changeTheme(savedTheme);
         this.updateThemeButton();
 
         // Load density preference
-        const savedDensity = localStorage.getItem('kanban-density') || 'comfortable';
+        const savedDensity = prefs.get('density') || 'comfortable';
         this.currentDensity = savedDensity;
         this.changeDensity(savedDensity);
         this.updateDensityButton();
 
         // Load board layout mode (vertical columns or horizontal lanes)
-        this.changeView(localStorage.getItem('kanban-view') === 'lanes' ? 'lanes' : 'columns', false);
+        this.changeView(prefs.get('view') === 'lanes' ? 'lanes' : 'columns', false);
 
         // Load column layout preference
-        const savedLayout = parseInt(localStorage.getItem('kanban-column-layout')) || 4;
+        const savedLayout = parseInt(prefs.get('column-layout')) || 4;
         this.currentColumnLayout = savedLayout;
         this.changeColumnLayout(savedLayout);
         this.updateLayoutButton();
@@ -46,24 +51,35 @@ class Kanvu {
         // Wallpaper + header bar style
         this.initAppearance();
 
-        // Load board data
-        this.loadSavedBoards();
-        
-        // Load the current board or create default
-        this.loadCurrentBoard();
-        
+        // Decide where the data lives (guest or account), then load boards, order, trash and the open board
+        if (this.options.pickStorage) this.storage = await this.options.pickStorage();
+        await this.loadData();
+
+        // In account mode: fetch server settings and apply them
+        if (this.storage.mode === 'account' && this.storage.auth) {
+            try {
+                prefs.setAuth(this.storage.auth);
+                const serverSettings = await prefs.loadFromServer();
+                prefs.pause();
+                try { this._applySettings(serverSettings); } finally { prefs.resume(); }
+                await this.loadWallpaper(); // reload wallpaper from server now that we're in account mode
+            } catch (e) { /* not critical — defaults remain in effect */ }
+        }
+
         this.initializeBoardName();
         
         // Initialize event listeners
         this.initializeEventListeners();
         
         // Autosave toggle (off by default) and save-state watcher
-        this.autosaveEnabled = localStorage.getItem('kanban-autosave') === 'true';
+        this.autosaveEnabled = prefs.get('autosave') === 'true';
         this.updateAutosaveButton();
         this.updateSaveButton();
         setInterval(() => this.watchSaveState(), 1000);
         window.addEventListener('beforeunload', (e) => {
-            if (this.isSaved()) return;
+            if (this._allowUnload) return; // set right before a planned redirect (Google/GitHub sign-in)
+            // A signed-out draft is lost when the tab closes, so warn whenever it has content
+            if (this.isDraft() ? !this.draftHasContent() : this.isSaved()) return;
             e.preventDefault();
             e.returnValue = '';
         });
@@ -158,7 +174,7 @@ class Kanvu {
     // Theme Management
     changeTheme(theme) {
         document.body.setAttribute('data-theme', theme);
-        localStorage.setItem('kanban-theme', theme);
+        prefs.set('theme', theme);
         this.currentTheme = theme;
     }
 
@@ -176,7 +192,7 @@ class Kanvu {
     // Density Management
     changeDensity(density) {
         document.body.setAttribute('data-density', density);
-        localStorage.setItem('kanban-density', density);
+        prefs.set('density', density);
         this.currentDensity = density;
     }
 
@@ -202,7 +218,7 @@ class Kanvu {
     changeView(view, rerender = true) {
         this.currentView = view;
         document.body.setAttribute('data-view', view);
-        localStorage.setItem('kanban-view', view);
+        prefs.set('view', view);
         document.querySelectorAll('[data-view-btn]').forEach(btn => {
             btn.setAttribute('aria-pressed', btn.dataset.viewBtn === view ? 'true' : 'false');
         });
@@ -213,7 +229,7 @@ class Kanvu {
     // Column Layout Management
     changeColumnLayout(layout) {
         document.body.setAttribute('data-columns', layout);
-        localStorage.setItem('kanban-column-layout', layout);
+        prefs.set('column-layout', layout);
         this.currentColumnLayout = layout;
     }
 
@@ -237,15 +253,15 @@ class Kanvu {
 
     // Appearance: header blur + custom wallpaper
     initAppearance() {
-        this.setHeaderBlur(localStorage.getItem('kanban-header-blur') === 'true');
-        this.glass = { lanes: localStorage.getItem('kanban-glass-lanes') === 'true', cards: localStorage.getItem('kanban-glass-cards') === 'true' };
-        const savedOpacity = parseInt(localStorage.getItem('kanban-glass-opacity'));
+        this.setHeaderBlur(prefs.get('header-blur') === 'true');
+        this.glass = { lanes: prefs.get('glass-lanes') === 'true', cards: prefs.get('glass-cards') === 'true' };
+        const savedOpacity = parseInt(prefs.get('glass-opacity'));
         this.setGlass('lanes', this.glass.lanes);
         this.setGlass('cards', this.glass.cards);
         this.setGlassOpacity(isNaN(savedOpacity) ? 55 : savedOpacity);
-        const oldBlur = parseInt(localStorage.getItem('kanban-glass-blur')); // earlier single slider
-        const hb = parseInt(localStorage.getItem('kanban-header-blur-amount'));
-        const sb = parseInt(localStorage.getItem('kanban-stage-blur-amount'));
+        const oldBlur = parseInt(prefs.get('glass-blur')); // earlier single slider
+        const hb = parseInt(prefs.get('header-blur-amount'));
+        const sb = parseInt(prefs.get('stage-blur-amount'));
         this.setGlassBlur('header', !isNaN(hb) ? hb : (!isNaN(oldBlur) ? oldBlur : 16));
         this.setGlassBlur('stage', !isNaN(sb) ? sb : (!isNaN(oldBlur) ? oldBlur : 10));
         this.wallpaperBlob = null;
@@ -256,10 +272,55 @@ class Kanvu {
         this.loadWallpaper();
     }
 
+    /**
+     * Applies server-loaded settings (server-key-named object) by calling the existing setters.
+     * Caller must wrap with prefs.pause() / prefs.resume() so the setters don't re-PATCH the server.
+     */
+    _applySettings(s) {
+        if (!s) return;
+        if (s.theme) this.changeTheme(s.theme);
+        if (s.density) this.changeDensity(s.density);
+        if (s.layout) this.changeView(s.layout, false);
+        if (s.columnLayout) { this.changeColumnLayout(s.columnLayout); this.updateLayoutButton(); }
+        if (s.headerBlur != null) this.setHeaderBlur(s.headerBlur);
+        if (s.glassLanes != null) this.setGlass('lanes', s.glassLanes);
+        if (s.glassCards != null) this.setGlass('cards', s.glassCards);
+        if (s.glassOpacity != null) this.setGlassOpacity(s.glassOpacity);
+        if (s.headerBlurAmount != null) this.setGlassBlur('header', s.headerBlurAmount);
+        if (s.stageBlurAmount != null) this.setGlassBlur('stage', s.stageBlurAmount);
+        if (s.autosave != null) {
+            this.autosaveEnabled = !!s.autosave;
+            // Use prefs.set directly (still paused, so no extra PATCH) to sync the cache
+            prefs.set('autosave', this.autosaveEnabled);
+            this.updateAutosaveButton();
+        }
+    }
+
+    /**
+     * Resets appearance, display options, and wallpaper to default values.
+     * Called on sign-out to ensure no private account state is left in the UI.
+     */
+    resetToDefaultSettings() {
+        this.changeTheme('black');
+        this.changeDensity('comfortable');
+        this.changeView('columns', false);
+        this.changeColumnLayout(4);
+        this.updateLayoutButton();
+        this.setHeaderBlur(false);
+        this.setGlass('lanes', false);
+        this.setGlass('cards', false);
+        this.setGlassOpacity(55);
+        this.setGlassBlur('header', 16);
+        this.setGlassBlur('stage', 10);
+        this.autosaveEnabled = false;
+        this.updateAutosaveButton();
+        this.showWallpaper(null);
+    }
+
     setHeaderBlur(on) {
         this.headerBlur = !!on;
         document.body.setAttribute('data-header', this.headerBlur ? 'blur' : 'solid');
-        localStorage.setItem('kanban-header-blur', this.headerBlur);
+        prefs.set('header-blur', this.headerBlur);
         const box = document.getElementById('header-blur-toggle');
         if (box) box.checked = this.headerBlur;
         this.updateGlassControls();
@@ -270,7 +331,7 @@ class Kanvu {
     setGlass(kind, on) {
         this.glass[kind] = !!on;
         document.body.setAttribute(`data-glass-${kind}`, this.glass[kind] ? 'on' : 'off');
-        localStorage.setItem(`kanban-glass-${kind}`, this.glass[kind]);
+        prefs.set(`glass-${kind}`, this.glass[kind]);
         const box = document.getElementById(`glass-${kind}-toggle`);
         if (box) box.checked = this.glass[kind];
         this.updateGlassControls();
@@ -294,7 +355,7 @@ class Kanvu {
         const v = parseInt(value);
         const px = isNaN(v) ? def : Math.min(30, Math.max(0, v));
         document.body.style.setProperty(kind === 'header' ? '--pbh' : '--pbs', px + 'px');
-        localStorage.setItem(`kanban-${kind}-blur-amount`, px);
+        prefs.set(`${kind}-blur-amount`, px);
         const slider = document.getElementById(`${kind}-blur-amount`);
         if (slider) slider.value = px;
         const out = document.getElementById(`${kind}-blur-val`);
@@ -304,37 +365,24 @@ class Kanvu {
     setGlassOpacity(value) {
         const v = Math.min(95, Math.max(20, parseInt(value) || 55));
         document.body.style.setProperty('--pa', v + '%');
-        localStorage.setItem('kanban-glass-opacity', v);
+        prefs.set('glass-opacity', v);
         const slider = document.getElementById('glass-opacity');
         if (slider) slider.value = v;
         const out = document.getElementById('glass-opacity-val');
         if (out) out.textContent = v + '%';
     }
 
-    // The wallpaper image is a Blob in IndexedDB (too big for localStorage next to the boards)
-    wpDb() {
-        return new Promise((resolve, reject) => {
-            const req = indexedDB.open('kanvu', 1);
-            req.onupgradeneeded = () => req.result.createObjectStore('kv');
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-    }
-
-    async wpStore(mode, fn) {
-        const db = await this.wpDb();
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction('kv', mode);
-            const req = fn(tx.objectStore('kv'));
-            tx.oncomplete = () => { db.close(); resolve(req.result); };
-            tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
-        });
-    }
-
     async loadWallpaper() {
-        try {
-            this.showWallpaper(await this.wpStore('readonly', s => s.get('wallpaper')) || null);
-        } catch (e) {
+        if (this.storage && this.storage.mode === 'account') {
+            // Account mode: fetch wallpaper from the server
+            try {
+                const blob = await this.storage.getWallpaper();
+                this.showWallpaper(blob || null);
+            } catch (e) {
+                this.showWallpaper(null);
+            }
+        } else {
+            // Draft mode: no stored server wallpaper
             this.showWallpaper(null);
         }
     }
@@ -555,12 +603,15 @@ class Kanvu {
         ctx.drawImage(wp.img, sx, sy, sw, sh, 0, 0, outW, outH);
         try {
             const blob = await new Promise((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error('encode')), 'image/jpeg', 0.9));
-            await this.wpStore('readwrite', st => st.put(blob, 'wallpaper'));
+            if (this.storage && this.storage.mode === 'account') {
+                // Account mode: upload to server
+                await this.storage.putWallpaper(blob);
+            }
             this.showWallpaper(blob);
             this.closeWallpaperModal();
             this.showToast('Wallpaper applied', 'success');
         } catch (e) {
-            this.showToast('Could not save the wallpaper (browser storage blocked or full)', 'error');
+            this.showToast('Could not save the wallpaper', 'error');
         }
     }
 
@@ -592,11 +643,14 @@ class Kanvu {
         const wp = this.wp;
         if (!wp || !wp.img) return; // nothing selected, nothing to remove
         if (wp.editable) { this.wpDiscardPending(); return; }
-        try {
-            await this.wpStore('readwrite', st => st.delete('wallpaper'));
-        } catch (e) {
-            this.showToast('Could not remove the wallpaper', 'error');
-            return;
+        if (this.storage && this.storage.mode === 'account') {
+            // Account mode: delete from server
+            try {
+                await this.storage.deleteWallpaper();
+            } catch (e) {
+                this.showToast('Could not remove the wallpaper', 'error');
+                return;
+            }
         }
         this.showWallpaper(null);
         this.closeWallpaperModal();
@@ -686,77 +740,22 @@ class Kanvu {
         }
     }
 
-    loadSavedBoards() {
-        const saved = localStorage.getItem('kanban-saved-boards');
-        if (saved) {
-            try {
-                this.savedBoards = JSON.parse(saved);
-            } catch (e) {
-                console.error('Failed to load saved boards:', e);
-                this.savedBoards = {};
-            }
-        }
-        
-        // Migrate old data if it exists
-        this.migrateOldData();
-        
+    // Loads boards, order and trash from the storage adapter into memory.
+    // Reads after this stay synchronous because they use these in-memory copies.
+    async loadSavedBoards() {
+        const data = await this.storage.loadAll();
+        this.savedBoards = data.boards || {};
+        this.boardOrder = data.order || [];
+        this.trash = data.trash || {};
+
         // Ensure we always have at least a default board
         if (Object.keys(this.savedBoards).length === 0) {
-            const defaultBoardId = this.generateBoardId('My Projects');
+            const defaultBoardId = this.generateBoardId('Untitled Board');
             const now = new Date().toISOString();
             this.savedBoards[defaultBoardId] = {
                 id: defaultBoardId,
-                name: 'My Projects',
-                tasks: [
-                    {
-                        id: 'demo-1',
-                        title: 'Kanban App Project',
-                        description: 'Build Cool Kanban app with easy customization!',
-                        column: 'backlog',
-                        difficulty: 2,
-                        progress: 0,
-                        priority: 'low',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    },
-                    {
-                        id: 'demo-2',
-                        title: 'College Assignment',
-                        description: 'Deadline on 30 Sept',
-                        column: 'todo',
-                        difficulty: 1,
-                        progress: 0,
-                        priority: 'medium',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    },
-                    {
-                        id: 'demo-3',
-                        title: 'Intern Project',
-                        description: 'Debugging backend system',
-                        column: 'in-progress',
-                        difficulty: 3,
-                        progress: 40,
-                        priority: 'high',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    },
-                    {
-                        id: 'demo-4',
-                        title: 'Capstone Project',
-                        description: 'Deployed',
-                        column: 'done',
-                        difficulty: 4,
-                        progress: 100,
-                        priority: 'high',
-                        color: '',
-                        createdAt: now,
-                        updatedAt: now
-                    }
-                ],
+                name: 'Untitled Board',
+                tasks: [],
                 columns: [
                     { id: 'backlog', title: 'Backlog', order: 0, color: '#a855f7' },
                     { id: 'todo', title: 'To Do', order: 1, color: '#ef4444' },
@@ -766,83 +765,82 @@ class Kanvu {
                 lastModified: now,
                 createdAt: now
             };
-            this.saveBoardsToStorage([defaultBoardId]);
+            await this.saveBoardsToStorage([defaultBoardId]);
         }
     }
-    
-    migrateOldData() {
-        // Check if there's old data in kanban-board
-        const oldData = localStorage.getItem('kanban-board');
-        if (oldData) {
-            try {
-                const data = JSON.parse(oldData);
-                const boardName = data.name || 'My Board';
-                
-                // Check if we need to migrate this data
-                let needsMigration = true;
-                for (const boardId in this.savedBoards) {
-                    if (this.savedBoards[boardId].name === boardName) {
-                        needsMigration = false;
-                        break;
-                    }
-                }
-                
-                if (needsMigration && data.tasks && data.tasks.length > 0) {
-                    // Create a new board with the old data
-                    const migratedBoardId = this.generateBoardId(boardName);
-                    
-                    // Try to get columns from old storage
-                    let columns = [
-                        { id: 'todo', title: 'To Do', order: 0 },
-                        { id: 'in-progress', title: 'In Progress', order: 1 },
-                        { id: 'done', title: 'Done', order: 2 }
-                    ];
-                    const oldColumns = localStorage.getItem('kanban-columns');
-                    if (oldColumns) {
-                        try {
-                            columns = JSON.parse(oldColumns);
-                        } catch (e) {
-                            // Use default columns
-                        }
-                    }
-                    
-                    this.savedBoards[migratedBoardId] = {
-                        id: migratedBoardId,
-                        name: boardName,
-                        tasks: data.tasks,
-                        columns: columns,
-                        lastModified: data.lastUpdated || new Date().toISOString(),
-                        createdAt: new Date().toISOString()
-                    };
-                    this.saveBoardsToStorage([migratedBoardId]);
-                    
-                    // Set as current board
-                    localStorage.setItem('kanban-current-board-id', migratedBoardId);
-                }
-                
-                // Clean up old storage
-                localStorage.removeItem('kanban-board');
-                localStorage.removeItem('kanban-columns');
-                localStorage.removeItem('kanban-last-save');
-            } catch (e) {
-                console.error('Failed to migrate old data:', e);
-            }
+
+    // Everything that depends on where the data lives: boards, order, trash and the open board
+    async loadData() {
+        await this.loadSavedBoards();
+        this.loadCurrentBoard();
+    }
+
+    // Switch storage (guest: LocalStorageAdapter, account: ApiAdapter), reload everything from it and redraw.
+    // Save or discard the open board's unsaved changes BEFORE calling this.
+    async setStorage(adapter) {
+        try { await this._saveQueue; } catch (e) { /* a failed save was already reported */ } // let saves to the old storage finish first
+        if (this._unsubscribeSync) { this._unsubscribeSync(); this._unsubscribeSync = null; }
+        this.storage = adapter;
+        this.currentBoardId = null;
+        await this.loadData();
+        this.initializeCrossTabSync();
+        this.updateModeUI();
+        this.updateBoardNameInput();
+        this.renderBoard();
+        this.refreshBoardManager();
+        // Reload wallpaper whenever we switch into account mode (sign-in after app is running)
+        if (this.storage.mode === 'account') {
+            try { await this.loadWallpaper(); } catch (e) { /* not critical */ }
         }
     }
-    
+
+        // ---- Signed-out draft ----
+    // Draft = the app requires an account and nobody is signed in: boards live only in this tab's sessionStorage
+    isDraft() {
+        return !!this.storage && this.storage.mode === 'draft';
+    }
+
+    requestSignIn(note) {
+        if (this.options.requestSignIn) this.options.requestSignIn(note);
+    }
+
+    // Call right before a planned page redirect so the "unsaved draft" warning does not appear
+    allowUnload() {
+        this._allowUnload = true;
+    }
+
+    // A fresh draft is one empty "Untitled Board"; that is not worth warning about
+    draftHasContent() {
+        return Object.keys(this.savedBoards).length > 1 || this.tasks.length > 0 || this.currentBoardName !== 'Untitled Board';
+    }
+
+    // Save button and autosave switch follow the mode (draft or account)
+    updateModeUI() {
+        this.updateSaveButton();
+        this.updateAutosaveButton();
+    }
+
+    // Puts the open board's name into the title input (never overwrites what is being typed)
+    updateBoardNameInput() {
+        const input = document.getElementById('board-name');
+        if (input && document.activeElement !== input) input.value = this.currentBoardName;
+    }
+
     generateBoardId(name) {
-        // Generate a unique ID based on name and timestamp
+        // The storage decides the id format (account mode uses UUIDs the server can store as-is)
+        if (this.storage && typeof this.storage.newBoardId === 'function') return this.storage.newBoardId(name);
+        // Guest mode: unique ID based on name and timestamp
         return `board_${name.toLowerCase().replace(/[^a-z0-9]/g, '-')}_${Date.now()}`;
     }
     
     loadCurrentBoard() {
         // Get the current board ID or use the first available board
-        this.currentBoardId = localStorage.getItem('kanban-current-board-id');
+        this.currentBoardId = this.storage.getCurrentBoardId();
         
         if (!this.currentBoardId || !this.savedBoards[this.currentBoardId]) {
-            // Use the first board or create default
+            // Use the first board if invalid board
             this.currentBoardId = Object.keys(this.savedBoards)[0];
-            localStorage.setItem('kanban-current-board-id', this.currentBoardId);
+            this.storage.setCurrentBoardId(this.currentBoardId);
         }
         
         const board = this.savedBoards[this.currentBoardId];
@@ -850,46 +848,30 @@ class Kanvu {
             this.currentBoardName = board.name;
             this.tasks = board.tasks || [];
             this.columns = board.columns || [
-                { id: 'todo', title: 'To Do', order: 0 },
-                { id: 'in-progress', title: 'In Progress', order: 1 },
-                { id: 'done', title: 'Done', order: 2 }
+                { id: 'backlog', title: 'Backlog', order: 0, color: '#a855f7' },
+                { id: 'todo', title: 'To Do', order: 1, color: '#ef4444' },
+                { id: 'in-progress', title: 'In Progress', order: 2, color: '#eab308' },
+                { id: 'done', title: 'Done', order: 3, color: '#22c55e' }
             ];
             this.markSaved(board.lastModified);
         }
     }
 
-    // Latest boards straight from localStorage (null if missing or unreadable).
-    // Unreadable data is copied to a backup key first so it can never be lost silently.
-    readStoredBoards() {
-        let raw = null;
-        try {
-            raw = localStorage.getItem('kanban-saved-boards');
-            const parsed = raw ? JSON.parse(raw) : null;
-            return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-        } catch (e) {
-            console.error('Saved boards are unreadable:', e);
-            try { if (raw) localStorage.setItem('kanban-saved-boards-backup', raw); } catch (_) {}
-            return null;
-        }
-    }
-
-    // Merge-on-write. This tab never writes its whole in-memory copy over localStorage.
-    // It re-reads the latest data first, applies only what THIS tab changed, then saves:
+    // Writes boards through the storage adapter, then refreshes the in-memory copy from what it returns.
     //   changed = ids of boards this tab created or edited
     //   removed = ids of boards this tab deleted on purpose
-    // so a tab that has been open for a while can't wipe out boards made in another tab.
-    saveBoardsToStorage(changed = [], removed = []) {
-        const latest = this.readStoredBoards() || {};
-        changed.forEach(id => { if (this.savedBoards[id]) latest[id] = this.savedBoards[id]; });
-        removed.forEach(id => { delete latest[id]; });
+    // Resolves to true on success, false (with an error toast) on failure.
+    async saveBoardsToStorage(changed = [], removed = []) {
+        const toSave = {};
+        changed.forEach(id => { if (this.savedBoards[id]) toSave[id] = this.savedBoards[id]; });
         try {
-            localStorage.setItem('kanban-saved-boards', JSON.stringify(latest));
+            const latest = await this.storage.saveBoards(toSave, removed);
+            if (latest) this.savedBoards = latest;
         } catch (e) {
             console.error('Failed to save boards:', e);
-            this.showToast('Could not save: browser storage is full or blocked', 'error');
+            this.showToast(`Could not save: ${e.message}`, 'error');
             return false;
         }
-        this.savedBoards = latest;
         setTimeout(() => this.renderRail(), 0);
         return true;
     }
@@ -905,8 +887,9 @@ class Kanvu {
     }
 
     // Remember the state that is known to be on disk
-    markSaved(stamp) {
-        this._savedSig = this.boardSignature();
+    markSaved(stamp, sig) {
+        // sig = the state that was actually written (edits made while a save was in flight stay unsaved)
+        this._savedSig = sig !== undefined ? sig : this.boardSignature();
         this.boardStamp = stamp || null;
         this.updateSaveButton();
     }
@@ -914,7 +897,7 @@ class Kanvu {
     // Called after every edit: persists only when autosave is on.
     // With autosave off the board stays unsaved until the Save button (or a board switch) saves it.
     commit() {
-        if (this.autosaveEnabled) this.saveCurrentBoard();
+        if (this.isDraft() || this.autosaveEnabled) this.saveCurrentBoard(); // a draft is kept in this tab's session silently
         else this.updateSaveButton();
     }
 
@@ -922,6 +905,11 @@ class Kanvu {
     updateSaveButton() {
         const button = document.getElementById('save-button');
         if (!button) return;
+        if (this.isDraft()) { // signed out: hide the save button — the account button is the sole sign-in CTA
+            button.hidden = true;
+            return;
+        }
+        button.hidden = false;
         const saved = this.isSaved();
         button.disabled = saved;
         button.textContent = saved ? 'Saved ✔' : 'Save';
@@ -939,12 +927,13 @@ class Kanvu {
             this._stableTicks = (this._stableTicks || 0) + 1;
         }
         this.updateSaveButton();
-        if (this.autosaveEnabled && sig !== this._savedSig && this._stableTicks >= 2) {
+        if ((this.isDraft() || this.autosaveEnabled) && sig !== this._savedSig && this._stableTicks >= 2 && !this._pendingSaves) {
             this.saveCurrentBoard();
         }
     }
 
     toggleAutosave() {
+        if (this.isDraft()) { this.requestSignIn('Sign in to save your boards and use autosave.'); return; }
         if (this.autosaveEnabled) {
             this.showConfirmDialog('Disable autosave', 'Changes will no longer be saved automatically.\n\nYou will need to click Save, or you may lose them when leaving the page.', (confirmed) => {
                 if (confirmed) this.setAutosave(false);
@@ -956,7 +945,7 @@ class Kanvu {
 
     setAutosave(enabled) {
         this.autosaveEnabled = enabled;
-        localStorage.setItem('kanban-autosave', this.autosaveEnabled);
+        prefs.set('autosave', this.autosaveEnabled);
         this.updateAutosaveButton();
         this.showToast(`Autosave ${this.autosaveEnabled ? 'enabled' : 'disabled'}`, 'info');
     }
@@ -964,34 +953,51 @@ class Kanvu {
     updateAutosaveButton() {
         const button = document.getElementById('autosave-button');
         if (!button) return;
+        const hint = document.getElementById('autosave-hint');
+        if (this.isDraft()) { // signed out: autosave is unavailable
+            button.disabled = true;
+            button.setAttribute('aria-checked', 'false');
+            button.title = 'Sign in to use autosave';
+            if (hint) hint.textContent = 'Sign in to use autosave';
+            return;
+        }
+        button.disabled = false;
         button.setAttribute('aria-checked', this.autosaveEnabled ? 'true' : 'false');
         button.title = this.autosaveEnabled ? 'Autosave is on. Click to turn off' : 'Autosave is off. Click to turn on';
-        const hint = document.getElementById('autosave-hint');
         if (hint) hint.textContent = this.autosaveEnabled ? 'Saves changes for you' : 'Off: use the Save button';
     }
 
-    // Other tabs write to localStorage, this tab gets a 'storage' event
+    // The storage tells us when its data changed somewhere else (another tab, later another device)
     initializeCrossTabSync() {
-        window.addEventListener('storage', (e) => {
-            if (e.storageArea !== localStorage) return;
-            if (e.key === 'kanban-board-order' || e.key === 'kanban-trash-boards') {
-                this.renderRail();
-                this.refreshBoardManager();
-                return;
-            }
-            if (e.key !== null && e.key !== 'kanban-saved-boards') return;
-            clearTimeout(this._syncTimer);
-            this._syncTimer = setTimeout(() => this.syncFromStorage(), 150);
-        });
+        if (this._unsubscribeSync) this._unsubscribeSync();
+        this._unsubscribeSync = typeof this.storage.onExternalChange === 'function'
+            ? this.storage.onExternalChange(() => {
+                clearTimeout(this._syncTimer);
+                this._syncTimer = setTimeout(() => this.syncFromStorage(), 150);
+            })
+            : null;
     }
 
-    syncFromStorage() {
+    async syncFromStorage() {
         if (this.drag) { // never re-render in the middle of a drag
             this._syncTimer = setTimeout(() => this.syncFromStorage(), 400);
             return;
         }
-        const stored = this.readStoredBoards();
-        if (!stored || Object.keys(stored).length === 0) return;
+        let data;
+        try {
+            data = await this.storage.loadAll();
+        } catch (e) {
+            console.error('Sync failed:', e);
+            return;
+        }
+        this.boardOrder = data.order || [];
+        this.trash = data.trash || {};
+        const stored = data.boards;
+        if (!stored || Object.keys(stored).length === 0) {
+            this.renderRail();
+            this.refreshBoardManager();
+            return;
+        }
 
         const mine = this.savedBoards[this.currentBoardId];
         const theirs = stored[this.currentBoardId];
@@ -1009,8 +1015,7 @@ class Kanvu {
             this.tasks = theirs.tasks || [];
             this.columns = theirs.columns || this.columns;
             this.markSaved(theirs.lastModified);
-            const nameInput = document.getElementById('board-name');
-            if (nameInput) nameInput.value = this.currentBoardName;
+            this.updateBoardNameInput();
             adopted = true;
         } else if (mine) {
             stored[this.currentBoardId] = mine; // ours is up to date, keep the live object
@@ -1026,20 +1031,30 @@ class Kanvu {
         this.refreshBoardManager();
     }
 
+    // Saves run one after another, so two never overlap (a slow network save can't be overtaken by a newer one).
+    // Resolves to true when the board was saved.
     saveCurrentBoard() {
+        this._pendingSaves = (this._pendingSaves || 0) + 1;
+        const run = () => this.saveCurrentBoardNow().finally(() => { this._pendingSaves--; });
+        this._saveQueue = (this._saveQueue || Promise.resolve()).then(run, run);
+        return this._saveQueue;
+    }
+
+    async saveCurrentBoardNow() {
         if (!this.currentBoardId) {
             // Create a new board ID if we don't have one
             this.currentBoardId = this.generateBoardId(this.currentBoardName);
-            localStorage.setItem('kanban-current-board-id', this.currentBoardId);
+            this.storage.setCurrentBoardId(this.currentBoardId);
         }
-        
+
         // Check if name changed and we need a new ID
         const currentBoard = this.savedBoards[this.currentBoardId];
         if (currentBoard && currentBoard.name !== this.currentBoardName) {
             // Board name changed, update the board data
             currentBoard.name = this.currentBoardName;
         }
-        
+
+        const sig = this.boardSignature(); // what is being saved right now
         const boardData = {
             id: this.currentBoardId,
             name: this.currentBoardName,
@@ -1048,10 +1063,10 @@ class Kanvu {
             lastModified: new Date().toISOString(),
             createdAt: currentBoard?.createdAt || new Date().toISOString()
         };
-        
+
         this.savedBoards[this.currentBoardId] = boardData;
-        const ok = this.saveBoardsToStorage([this.currentBoardId]);
-        if (ok) this.markSaved(boardData.lastModified);
+        const ok = await this.saveBoardsToStorage([this.currentBoardId]);
+        if (ok) this.markSaved(boardData.lastModified, sig);
         return ok;
     }
 
@@ -1066,36 +1081,34 @@ class Kanvu {
                 { id: 'in-progress', title: 'In Progress', order: 1 },
                 { id: 'done', title: 'Done', order: 2 }
             ];
-            
-            // Update current board ID in storage
-            localStorage.setItem('kanban-current-board-id', boardId);
+
+            // Remember which board is open on this device
+            this.storage.setCurrentBoardId(boardId);
             this.markSaved(board.lastModified);
-            
+
             // Update UI
-            document.getElementById('board-name').value = this.currentBoardName;
+            this.updateBoardNameInput();
             this.renderBoard();
             if (!quiet) this.showToast(`Loaded board: ${board.name}`, 'success');
         }
     }
 
-    // ---- Board order (kept in its own key so board data itself never changes) ----
+    // ---- Board order (kept apart from the board data itself) ----
     getOrderedBoardIds() {
-        let saved = [];
-        try { saved = JSON.parse(localStorage.getItem('kanban-board-order')) || []; } catch (e) { saved = []; }
-        if (!Array.isArray(saved)) saved = [];
         const ids = Object.keys(this.savedBoards);
-        const ordered = saved.filter(id => ids.includes(id));
+        const ordered = this.boardOrder.filter(id => ids.includes(id));
         ids.forEach(id => { if (!ordered.includes(id)) ordered.push(id); });
         return ordered;
     }
 
-    setBoardOrder(ids) {
+    async setBoardOrder(ids) {
         try {
-            localStorage.setItem('kanban-board-order', JSON.stringify(ids));
+            await this.storage.setOrder(ids);
         } catch (e) {
             this.showToast('Could not save board order', 'error');
             return;
         }
+        this.boardOrder = ids;
         this.renderRail();
         this.refreshBoardManager();
     }
@@ -1118,60 +1131,57 @@ class Kanvu {
         this.setBoardOrder(ids);
     }
 
-    // ---- Trash ----
+    // ---- Trash (in-memory copy in this.trash, changes go through the storage adapter) ----
     readTrash() {
-        try {
-            const t = JSON.parse(localStorage.getItem('kanban-trash-boards'));
-            return t && typeof t === 'object' && !Array.isArray(t) ? t : {};
-        } catch (e) {
-            return {};
-        }
+        return this.trash;
     }
 
-    writeTrash(trash) {
+    async restoreBoard(boardId) {
+        if (!this.trash[boardId]) return;
+        let board;
         try {
-            localStorage.setItem('kanban-trash-boards', JSON.stringify(trash));
-            return true;
+            board = await this.storage.restoreBoard(boardId);
         } catch (e) {
-            this.showToast('Could not update trash: browser storage is full or blocked', 'error');
-            return false;
+            this.showToast(`Could not restore: ${e.message}`, 'error');
+            return;
         }
-    }
-
-    restoreBoard(boardId) {
-        const trash = this.readTrash();
-        const item = trash[boardId];
-        if (!item) return;
-        const { deletedAt, ...board } = item;
+        if (!board) return;
         this.savedBoards[boardId] = board;
-        if (!this.saveBoardsToStorage([boardId])) return;
-        delete trash[boardId];
-        this.writeTrash(trash);
+        delete this.trash[boardId];
+        this.renderRail();
         this.refreshBoardManager();
         this.showToast(`Restored board: ${board.name}`, 'success');
     }
 
     deleteBoardForever(boardId) {
-        const item = this.readTrash()[boardId];
+        const item = this.trash[boardId];
         if (!item) return;
-        this.showConfirmDialog('Delete permanently', `Permanently delete "${item.name}"?\n\nThis action cannot be undone.`, () => {
-            const trash = this.readTrash();
-            delete trash[boardId];
-            if (this.writeTrash(trash)) {
-                this.refreshBoardManager();
-                this.showToast(`Permanently deleted: ${item.name}`, 'info');
+        this.showConfirmDialog('Delete permanently', `Permanently delete "${item.name}"?\n\nThis action cannot be undone.`, async () => {
+            try {
+                await this.storage.purgeBoard(boardId);
+            } catch (e) {
+                this.showToast(`Could not update trash: ${e.message}`, 'error');
+                return;
             }
+            delete this.trash[boardId];
+            this.refreshBoardManager();
+            this.showToast(`Permanently deleted: ${item.name}`, 'info');
         });
     }
 
     emptyTrash() {
-        const count = Object.keys(this.readTrash()).length;
+        const count = Object.keys(this.trash).length;
         if (!count) return;
-        this.showConfirmDialog('Empty trash', `Permanently delete ${count} board${count === 1 ? '' : 's'} in the trash?\n\nThis action cannot be undone.`, () => {
-            if (this.writeTrash({})) {
-                this.refreshBoardManager();
-                this.showToast('Trash emptied', 'info');
+        this.showConfirmDialog('Empty trash', `Permanently delete ${count} board${count === 1 ? '' : 's'} in the trash?\n\nThis action cannot be undone.`, async () => {
+            try {
+                await this.storage.emptyTrash();
+            } catch (e) {
+                this.showToast(`Could not update trash: ${e.message}`, 'error');
+                return;
             }
+            this.trash = {};
+            this.refreshBoardManager();
+            this.showToast('Trash emptied', 'info');
         });
     }
 
@@ -1412,30 +1422,30 @@ class Kanvu {
     }
 
     createNewBoard() {
-        this.showInputDialog('New Board', 'Enter a name for the new board:', 'Untitled Board', (newName) => {
+        this.showInputDialog('New Board', 'Enter a name for the new board:', 'Untitled Board', async (newName) => {
             if (newName && newName.trim()) {
                 const boardName = newName.trim();
-            
-            // Save current board first
-            this.saveCurrentBoard();
-            
-            // Create new board with unique ID
-            const newBoardId = this.generateBoardId(boardName);
-            this.currentBoardId = newBoardId;
-            this.currentBoardName = boardName;
-            this.tasks = [];
-            this.columns = [
-                { id: 'todo', title: 'To Do', order: 0 },
-                { id: 'in-progress', title: 'In Progress', order: 1 },
-                { id: 'done', title: 'Done', order: 2 }
-            ];
-            
-            // Save the new board
-            this.saveCurrentBoard();
-            localStorage.setItem('kanban-current-board-id', newBoardId);
-            
+
+                // Save current board first (the new board's state is only swapped in after this finishes)
+                await this.saveCurrentBoard();
+
+                // Create new board with unique ID
+                const newBoardId = this.generateBoardId(boardName);
+                this.currentBoardId = newBoardId;
+                this.currentBoardName = boardName;
+                this.tasks = [];
+                this.columns = [
+                    { id: 'todo', title: 'To Do', order: 0 },
+                    { id: 'in-progress', title: 'In Progress', order: 1 },
+                    { id: 'done', title: 'Done', order: 2 }
+                ];
+
+                // Save the new board and remember it as the open one
+                await this.saveCurrentBoard();
+                this.storage.setCurrentBoardId(newBoardId);
+
                 // Update UI
-                document.getElementById('board-name').value = this.currentBoardName;
+                this.updateBoardNameInput();
                 this.renderBoard();
                 this.closeBoardManager();
                 this.showToast(`Created new board: ${boardName}`, 'success');
@@ -1444,7 +1454,7 @@ class Kanvu {
     }
 
     duplicateCurrentBoard() {
-        this.showInputDialog('Duplicate Board', 'Enter a name for the duplicated board:', this.currentBoardName + ' Copy', (newName) => {
+        this.showInputDialog('Duplicate Board', 'Enter a name for the duplicated board:', this.currentBoardName + ' Copy', async (newName) => {
             if (newName && newName.trim()) {
                 const boardName = newName.trim();
                 const newBoardId = this.generateBoardId(boardName);
@@ -1459,7 +1469,10 @@ class Kanvu {
                 };
                 
                 this.savedBoards[newBoardId] = duplicatedBoard;
-                this.saveBoardsToStorage([newBoardId]);
+                if (!(await this.saveBoardsToStorage([newBoardId]))) {
+                    delete this.savedBoards[newBoardId];
+                    return;
+                }
                 this.closeBoardManager();
                 this.showToast(`Duplicated board: ${boardName}`, 'success');
             }
@@ -1481,12 +1494,12 @@ class Kanvu {
         }
     }
 
-    performBoardSwitch(boardId) {
+    async performBoardSwitch(boardId) {
         const targetBoard = this.savedBoards[boardId];
         if (!targetBoard) return;
-        
+
         // Save current board
-        this.saveCurrentBoard();
+        await this.saveCurrentBoard();
         
         // Load new board
         this.loadBoard(boardId);
@@ -1510,12 +1523,8 @@ class Kanvu {
             ? `Move the current board "${board.name}" to the trash?\n\nAnother board will open in its place. You can restore this one later from Manage boards > Trash.`
             : `Move the board "${board.name}" to the trash?\n\nYou can restore it later from Manage boards > Trash.`;
 
-        this.showConfirmDialog('Move to trash', message, (confirmed) => {
+        this.showConfirmDialog('Move to trash', message, async (confirmed) => {
             if (!confirmed) return;
-            // Copy to trash first, so a failed write can never lose the board
-            const trash = this.readTrash();
-            trash[boardId] = { ...board, deletedAt: new Date().toISOString() };
-            if (!this.writeTrash(trash)) return;
 
             // Which board takes over: the one after it in the list, else the one before, else a fresh one
             let nextId = null;
@@ -1524,13 +1533,16 @@ class Kanvu {
                 const i = ids.indexOf(boardId);
                 nextId = ids[i + 1] || ids[i - 1] || null;
             }
-            delete this.savedBoards[boardId];
-            const changed = [];
-            if (!this.saveBoardsToStorage(changed, [boardId])) {
-                this.savedBoards[boardId] = stored; // keep it if the write failed
-                if (changed.length) delete this.savedBoards[nextId];
+
+            // The adapter copies it to the trash first, then removes it, and undoes the copy if that fails
+            try {
+                this.trash[boardId] = await this.storage.trashBoard({ ...board, id: boardId });
+            } catch (e) {
+                this.showToast(`Could not move to trash: ${e.message}`, 'error');
                 return;
             }
+
+            delete this.savedBoards[boardId];
             if (isCurrent) this.loadBoard(nextId, true);
             this.refreshBoardManager();
             this.renderRail();
@@ -1731,9 +1743,13 @@ class Kanvu {
     }
 
     // Storage Management
-    saveToStorage() {
+    async saveToStorage() {
+        if (this.isDraft()) { // signed out: saving needs an account
+            this.requestSignIn('Your boards are not saved yet. Sign in to save them.');
+            return;
+        }
         // Saves the current board (merged into whatever is already stored)
-        if (this.saveCurrentBoard()) this.showToast('Board saved', 'success');
+        if (await this.saveCurrentBoard()) this.showToast('Board saved', 'success');
     }
     
     getLastSaveInfo() {
@@ -1899,7 +1915,7 @@ class Kanvu {
                     'Import Board',
                     `Import "${importedBoardName}"?\n\nFound ${importedTasks.length} tasks and ${importedColumns.length} stages.\n\nWhat would you like to do?`,
                     options,
-                    (choice) => {
+                    async (choice) => {
 
                 if (choice === 0) {
                     // Replace current board
@@ -1920,7 +1936,7 @@ class Kanvu {
                     }
                     
                     // Update UI
-                    document.getElementById('board-name').value = this.currentBoardName;
+                    this.updateBoardNameInput();
                     this.renderBoard();
                     this.commit();
                     this.saveColumnsToStorage();
@@ -1933,24 +1949,30 @@ class Kanvu {
                     
                     // Ensure unique name
                     let counter = 1;
-                    while (this.savedBoards[newBoardName]) {
+                    while (Object.values(this.savedBoards).some(b => b.name === newBoardName)) {
                         newBoardName = `${importedBoardName} (${counter})`;
                         counter++;
                     }
-                    
+
                     // Save current board first
-                    this.saveCurrentBoard();
-                    
-                    // Create new board with imported data
-                    const newBoard = {
+                    await this.saveCurrentBoard();
+
+                    // Create new board with imported data (real id, like every other board)
+                    const newBoardId = this.generateBoardId(newBoardName);
+                    const now = new Date().toISOString();
+                    this.savedBoards[newBoardId] = {
+                        id: newBoardId,
                         name: newBoardName,
                         tasks: importedTasks,
                         columns: importedColumns,
-                        lastModified: new Date().toISOString()
+                        lastModified: now,
+                        createdAt: now
                     };
-                    
-                    this.savedBoards[newBoardName] = newBoard;
-                    this.saveBoardsToStorage([newBoardName]);
+                    if (!(await this.saveBoardsToStorage([newBoardId]))) {
+                        delete this.savedBoards[newBoardId];
+                        return;
+                    }
+
                     
                     this.showToast(`Board imported as "${newBoardName}"`, 'success');
                 } else {
@@ -3142,5 +3164,3 @@ style.textContent = `
 `;
 document.head.appendChild(style);
 
-// Initialize the application
-const kanban = new Kanvu();

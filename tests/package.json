@@ -1,0 +1,11 @@
+{
+  "name": "kanvu-tests",
+  "private": true,
+  "scripts": {
+    "test": "node guest-mode.test.js && node account-mode.test.js"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.0.0",
+    "jsdom": "^30.0.0"
+  }
+}
