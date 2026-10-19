@@ -317,24 +317,26 @@ class Kanvu {
         this.showWallpaper(null);
     }
 
-    setHeaderBlur(on) {
+    setHeaderBlur(on, commit = !this.wp) {
         this.headerBlur = !!on;
         document.body.setAttribute('data-header', this.headerBlur ? 'blur' : 'solid');
-        prefs.set('header-blur', this.headerBlur);
+        if (commit) prefs.set('header-blur', this.headerBlur);
         const box = document.getElementById('header-blur-toggle');
         if (box) box.checked = this.headerBlur;
         this.updateGlassControls();
         this.updateWallpaperButton();
+        this.wpUpdateApplyButton();
     }
 
     // Translucent stages / cards (opacity is shared, lower = more wallpaper visible)
-    setGlass(kind, on) {
+    setGlass(kind, on, commit = !this.wp) {
         this.glass[kind] = !!on;
         document.body.setAttribute(`data-glass-${kind}`, this.glass[kind] ? 'on' : 'off');
-        prefs.set(`glass-${kind}`, this.glass[kind]);
+        if (commit) prefs.set(`glass-${kind}`, this.glass[kind]);
         const box = document.getElementById(`glass-${kind}-toggle`);
         if (box) box.checked = this.glass[kind];
         this.updateGlassControls();
+        this.wpUpdateApplyButton();
     }
 
     // Opacity applies to stages/cards; blur has its own slider for the header bar and for stages
@@ -350,26 +352,31 @@ class Kanvu {
         set('stage-blur-amount', 'stage-blur-row', !!g.lanes);
     }
 
-    setGlassBlur(kind, value) {
+    setGlassBlur(kind, value, commit = !this.wp) {
         const def = kind === 'header' ? 16 : 10;
         const v = parseInt(value);
         const px = isNaN(v) ? def : Math.min(30, Math.max(0, v));
+        if (kind === 'header') this.headerBlurAmount = px;
+        else this.stageBlurAmount = px;
         document.body.style.setProperty(kind === 'header' ? '--pbh' : '--pbs', px + 'px');
-        prefs.set(`${kind}-blur-amount`, px);
+        if (commit) prefs.set(`${kind}-blur-amount`, px);
         const slider = document.getElementById(`${kind}-blur-amount`);
         if (slider) slider.value = px;
         const out = document.getElementById(`${kind}-blur-val`);
         if (out) out.textContent = px + 'px';
+        this.wpUpdateApplyButton();
     }
 
-    setGlassOpacity(value) {
+    setGlassOpacity(value, commit = !this.wp) {
         const v = Math.min(95, Math.max(20, parseInt(value) || 55));
+        this.glassOpacity = v;
         document.body.style.setProperty('--pa', v + '%');
-        prefs.set('glass-opacity', v);
+        if (commit) prefs.set('glass-opacity', v);
         const slider = document.getElementById('glass-opacity');
         if (slider) slider.value = v;
         const out = document.getElementById('glass-opacity-val');
         if (out) out.textContent = v + '%';
+        this.wpUpdateApplyButton();
     }
 
     async loadWallpaper() {
@@ -455,6 +462,26 @@ class Kanvu {
         });
     }
 
+    wpHasAppearanceChanges() {
+        const s = this._wpSavedAppearance;
+        if (!s) return false;
+        return (
+            !!this.headerBlur !== s.headerBlur ||
+            !!this.glass.lanes !== s.glassLanes ||
+            !!this.glass.cards !== s.glassCards ||
+            this.glassOpacity !== s.glassOpacity ||
+            this.headerBlurAmount !== s.headerBlurAmount ||
+            this.stageBlurAmount !== s.stageBlurAmount
+        );
+    }
+
+    wpUpdateApplyButton() {
+        const btn = document.getElementById('wp-apply');
+        if (!btn) return;
+        const hasNewImage = !!(this.wp && this.wp.editable && this.wp.img);
+        btn.disabled = !(hasNewImage || this.wpHasAppearanceChanges());
+    }
+
     // Empty crop box is clickable; Remove is only usable while an image is shown in the box
     wpSyncUi() {
         const frame = document.getElementById('wp-frame');
@@ -468,6 +495,16 @@ class Kanvu {
         document.body.classList.remove('rail-open');
         this.wpReset();
 
+        // Snapshot current appearance so real-time preview changes can be reverted if closed without Apply
+        this._wpSavedAppearance = {
+            headerBlur: !!this.headerBlur,
+            glassLanes: !!(this.glass && this.glass.lanes),
+            glassCards: !!(this.glass && this.glass.cards),
+            glassOpacity: this.glassOpacity ?? 55,
+            headerBlurAmount: this.headerBlurAmount ?? 16,
+            stageBlurAmount: this.stageBlurAmount ?? 10
+        };
+
         // The crop frame copies the exact box the wallpaper layer occupies
         const box = document.getElementById('wallpaper').getBoundingClientRect();
         const ratio = box.width / box.height;
@@ -478,8 +515,8 @@ class Kanvu {
         document.getElementById('wp-hint').textContent =
             `The frame matches your board area (${this.wp.boxW} × ${this.wp.boxH} px, ${ratio.toFixed(2)}:1). Drag to move, scroll or use the slider to zoom.`;
         document.getElementById('wp-choose').textContent = this.wallpaperBlob ? 'Change image' : 'Choose image';
-        document.getElementById('wp-apply').disabled = true;
         document.getElementById('wp-zoom-row').classList.add('hidden');
+        this.wpUpdateApplyButton();
 
         this.wpSyncUi();
         document.getElementById('wallpaper-modal').classList.add('show');
@@ -495,6 +532,16 @@ class Kanvu {
     closeWallpaperModal() {
         document.getElementById('wallpaper-modal').classList.remove('show');
         this.wpReset();
+        if (this._wpSavedAppearance) {
+            const s = this._wpSavedAppearance;
+            this._wpSavedAppearance = null;
+            this.setHeaderBlur(s.headerBlur, false);
+            this.setGlass('lanes', s.glassLanes, false);
+            this.setGlass('cards', s.glassCards, false);
+            this.setGlassOpacity(s.glassOpacity, false);
+            this.setGlassBlur('header', s.headerBlurAmount, false);
+            this.setGlassBlur('stage', s.stageBlurAmount, false);
+        }
     }
 
     wpReset() {
@@ -560,7 +607,7 @@ class Kanvu {
 
         document.getElementById('wp-zoom').value = 1;
         document.getElementById('wp-zoom-row').classList.toggle('hidden', !editable);
-        document.getElementById('wp-apply').disabled = !editable;
+        this.wpUpdateApplyButton();
         this.wpSyncUi();
         this.wpRender();
     }
@@ -589,29 +636,50 @@ class Kanvu {
 
     async saveWallpaper() {
         const wp = this.wp;
-        if (!wp || !wp.editable || !wp.img) return;
-        const s = wp.base * wp.zoom;
-        const sx = -wp.ox / s, sy = -wp.oy / s, sw = wp.fw / s, sh = wp.fh / s;
-        const k = Math.min(1, 2560 / Math.max(sw, sh)); // never upscale, cap the longest side
-        const outW = Math.max(1, Math.round(sw * k));
-        const outH = Math.max(1, Math.round(outW / wp.ratio));
-        const canvas = document.createElement('canvas');
-        canvas.width = outW;
-        canvas.height = outH;
-        const ctx = canvas.getContext('2d');
-        ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(wp.img, sx, sy, sw, sh, 0, 0, outW, outH);
+        if (!wp) return;
+        const hasNewImage = !!(wp.editable && wp.img);
+        const hasAppearanceChanges = this.wpHasAppearanceChanges();
+        if (!hasNewImage && !hasAppearanceChanges) return;
+
+        const applyBtn = document.getElementById('wp-apply');
+        if (applyBtn) { applyBtn.disabled = true; applyBtn.classList.add('btn-loading'); }
         try {
-            const blob = await new Promise((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error('encode')), 'image/jpeg', 0.9));
-            if (this.storage && this.storage.mode === 'account') {
-                // Account mode: upload to server
-                await this.storage.putWallpaper(blob);
+            if (hasNewImage) {
+                const s = wp.base * wp.zoom;
+                const sx = -wp.ox / s, sy = -wp.oy / s, sw = wp.fw / s, sh = wp.fh / s;
+                const k = Math.min(1, 2560 / Math.max(sw, sh)); // never upscale, cap the longest side
+                const outW = Math.max(1, Math.round(sw * k));
+                const outH = Math.max(1, Math.round(outW / wp.ratio));
+                const canvas = document.createElement('canvas');
+                canvas.width = outW;
+                canvas.height = outH;
+                const ctx = canvas.getContext('2d');
+                ctx.imageSmoothingQuality = 'high';
+                ctx.drawImage(wp.img, sx, sy, sw, sh, 0, 0, outW, outH);
+                const blob = await new Promise((res, rej) => canvas.toBlob(b => b ? res(b) : rej(new Error('encode')), 'image/jpeg', 0.9));
+                if (this.storage && this.storage.mode === 'account') {
+                    // Account mode: upload to server
+                    await this.storage.putWallpaper(blob);
+                }
+                this.showWallpaper(blob);
             }
-            this.showWallpaper(blob);
+            if (hasAppearanceChanges) {
+                prefs.set('header-blur', this.headerBlur);
+                prefs.set('glass-lanes', this.glass.lanes);
+                prefs.set('glass-cards', this.glass.cards);
+                prefs.set('glass-opacity', this.glassOpacity);
+                prefs.set('header-blur-amount', this.headerBlurAmount);
+                prefs.set('stage-blur-amount', this.stageBlurAmount);
+                await prefs.flush();
+            }
+            this._wpSavedAppearance = null; // committed: do not revert in closeWallpaperModal
             this.closeWallpaperModal();
             this.showToast('Wallpaper applied', 'success');
         } catch (e) {
+            this.wpUpdateApplyButton();
             this.showToast('Could not save the wallpaper', 'error');
+        } finally {
+            if (applyBtn) applyBtn.classList.remove('btn-loading');
         }
     }
 
@@ -630,7 +698,7 @@ class Kanvu {
         wp.zoom = 1;
         document.getElementById('wp-zoom').value = 1;
         document.getElementById('wp-zoom-row').classList.add('hidden');
-        document.getElementById('wp-apply').disabled = true;
+        this.wpUpdateApplyButton();
         this.wpSyncUi();
         if (this.wallpaperUrl) {
             this.wpLoadImage(this.wallpaperUrl).then((im) => {
@@ -643,13 +711,17 @@ class Kanvu {
         const wp = this.wp;
         if (!wp || !wp.img) return; // nothing selected, nothing to remove
         if (wp.editable) { this.wpDiscardPending(); return; }
+        const removeBtn = document.getElementById('wp-remove');
         if (this.storage && this.storage.mode === 'account') {
             // Account mode: delete from server
+            if (removeBtn) { removeBtn.disabled = true; removeBtn.classList.add('btn-loading'); }
             try {
                 await this.storage.deleteWallpaper();
             } catch (e) {
                 this.showToast('Could not remove the wallpaper', 'error');
                 return;
+            } finally {
+                if (removeBtn) { removeBtn.disabled = false; removeBtn.classList.remove('btn-loading'); }
             }
         }
         this.showWallpaper(null);
@@ -910,6 +982,11 @@ class Kanvu {
             return;
         }
         button.hidden = false;
+        if (this._isSaving) {
+            button.disabled = true;
+            button.textContent = 'Saving...';
+            return;
+        }
         const saved = this.isSaved();
         button.disabled = saved;
         button.textContent = saved ? 'Saved ✔' : 'Save';
@@ -1064,10 +1141,17 @@ class Kanvu {
             createdAt: currentBoard?.createdAt || new Date().toISOString()
         };
 
-        this.savedBoards[this.currentBoardId] = boardData;
-        const ok = await this.saveBoardsToStorage([this.currentBoardId]);
-        if (ok) this.markSaved(boardData.lastModified, sig);
-        return ok;
+        this._isSaving = true;
+        this.updateSaveButton();
+        try {
+            this.savedBoards[this.currentBoardId] = boardData;
+            const ok = await this.saveBoardsToStorage([this.currentBoardId]);
+            if (ok) this.markSaved(boardData.lastModified, sig);
+            return ok;
+        } finally {
+            this._isSaving = false;
+            this.updateSaveButton();
+        }
     }
 
     loadBoard(boardId, quiet = false) {
@@ -1906,8 +1990,8 @@ class Kanvu {
 
                 // Ask user what to do with the import
                 const options = [
-                    'Replace current board',
                     'Import as new board',
+                    'Replace current board',
                     'Cancel import'
                 ];
 
@@ -1916,70 +2000,77 @@ class Kanvu {
                     `Import "${importedBoardName}"?\n\nFound ${importedTasks.length} tasks and ${importedColumns.length} stages.\n\nWhat would you like to do?`,
                     options,
                     async (choice) => {
+                        if (choice === 0) {
+                            // 1. Import as new board
+                            let newBoardName = importedBoardName;
 
-                if (choice === 0) {
-                    // Replace current board
-                    this.currentBoardName = importedBoardName;
-                    this.tasks = importedTasks;
-                    this.columns = importedColumns;
-                    
-                    // Apply preferences if available
-                    if (preferences) {
-                        if (preferences.theme && ['white', 'grey', 'black'].includes(preferences.theme)) {
-                            this.changeTheme(preferences.theme);
-                            this.updateThemeButton();
+                            // Ensure unique name
+                            let counter = 1;
+                            while (Object.values(this.savedBoards).some(b => b.name === newBoardName)) {
+                                newBoardName = `${importedBoardName} (${counter})`;
+                                counter++;
+                            }
+
+                            // Save current board first
+                            await this.saveCurrentBoard();
+
+                            // Create new board with imported data (real id, like every other board)
+                            const newBoardId = this.generateBoardId(newBoardName);
+                            const now = new Date().toISOString();
+                            this.savedBoards[newBoardId] = {
+                                id: newBoardId,
+                                name: newBoardName,
+                                tasks: importedTasks,
+                                columns: importedColumns,
+                                lastModified: now,
+                                createdAt: now
+                            };
+                            if (!(await this.saveBoardsToStorage([newBoardId]))) {
+                                delete this.savedBoards[newBoardId];
+                                return;
+                            }
+
+                            this.loadBoard(newBoardId, true);
+                            this.showToast(`Board imported as "${newBoardName}"`, 'success');
+                        } else if (choice === 1) {
+                            // 2. Replace current board — ask for overwrite confirmation first
+                            this.showConfirmDialog(
+                                'Overwrite Current Board',
+                                `Are you sure you want to overwrite "${this.currentBoardName}" with "${importedBoardName}"?\n\nAll current tasks and stages on this board will be replaced. This action cannot be undone.`,
+                                (confirmed) => {
+                                    if (!confirmed) return;
+
+                                    this.currentBoardName = importedBoardName;
+                                    this.tasks = importedTasks;
+                                    this.columns = importedColumns;
+
+                                    // Apply preferences if available
+                                    if (preferences) {
+                                        if (preferences.theme && ['white', 'grey', 'black'].includes(preferences.theme)) {
+                                            this.changeTheme(preferences.theme);
+                                            this.updateThemeButton();
+                                        }
+                                        if (preferences.density && ['comfortable', 'compact', 'dense'].includes(preferences.density)) {
+                                            this.changeDensity(preferences.density);
+                                            this.updateDensityButton();
+                                        }
+                                    }
+
+                                    // Update UI
+                                    this.updateBoardNameInput();
+                                    this.renderBoard();
+                                    this.commit();
+                                    this.saveColumnsToStorage();
+                                    this.commit();
+                                    this.showToast(`Board replaced with "${importedBoardName}"`, 'success');
+                                }
+                            );
+                        } else {
+                            // 3. Cancel import
+                            this.showToast('Import cancelled', 'info');
                         }
-                        if (preferences.density && ['comfortable', 'compact', 'dense'].includes(preferences.density)) {
-                            this.changeDensity(preferences.density);
-                            this.updateDensityButton();
-                        }
                     }
-                    
-                    // Update UI
-                    this.updateBoardNameInput();
-                    this.renderBoard();
-                    this.commit();
-                    this.saveColumnsToStorage();
-                    this.commit();
-                    this.showToast(`Board replaced with "${importedBoardName}"`, 'success');
-                    
-                } else if (choice === 1) {
-                    // Import as new board
-                    let newBoardName = importedBoardName;
-                    
-                    // Ensure unique name
-                    let counter = 1;
-                    while (Object.values(this.savedBoards).some(b => b.name === newBoardName)) {
-                        newBoardName = `${importedBoardName} (${counter})`;
-                        counter++;
-                    }
-
-                    // Save current board first
-                    await this.saveCurrentBoard();
-
-                    // Create new board with imported data (real id, like every other board)
-                    const newBoardId = this.generateBoardId(newBoardName);
-                    const now = new Date().toISOString();
-                    this.savedBoards[newBoardId] = {
-                        id: newBoardId,
-                        name: newBoardName,
-                        tasks: importedTasks,
-                        columns: importedColumns,
-                        lastModified: now,
-                        createdAt: now
-                    };
-                    if (!(await this.saveBoardsToStorage([newBoardId]))) {
-                        delete this.savedBoards[newBoardId];
-                        return;
-                    }
-
-                    
-                    this.showToast(`Board imported as "${newBoardName}"`, 'success');
-                } else {
-                    // Cancel import
-                    this.showToast('Import cancelled', 'info');
-                }
-                    });
+                );
 
             } catch (error) {
                 console.error('Import failed:', error);
@@ -2006,14 +2097,14 @@ class Kanvu {
                         <button class="modal-close" onclick="kanban.closeChoiceDialog()">×</button>
                     </div>
                     <div class="modal-body">
-                        <p id="choice-dialog-message"></p>
+                        <p id="choice-dialog-message" style="white-space:pre-line"></p>
                         <div id="choice-dialog-options" class="choice-options"></div>
-                    </div>
-                    <div class="modal-actions">
-                        <button type="button" class="btn btn-secondary" onclick="kanban.closeChoiceDialog()">Cancel</button>
                     </div>
                 </div>
             `;
+            dialog.addEventListener('click', (e) => {
+                if (e.target === dialog) this.closeChoiceDialog();
+            });
             document.body.appendChild(dialog);
         }
         
@@ -2021,9 +2112,11 @@ class Kanvu {
         document.getElementById('choice-dialog-message').textContent = message;
         
         const optionsContainer = document.getElementById('choice-dialog-options');
-        optionsContainer.innerHTML = options.map((option, index) => 
-            `<button class="btn choice-btn" onclick="kanban.selectChoice(${index})">${option}</button>`
-        ).join('');
+        optionsContainer.innerHTML = options.map((option, index) => {
+            const isCancel = /^cancel/i.test(option);
+            const btnClass = isCancel ? 'btn btn-secondary choice-btn' : 'btn choice-btn';
+            return `<button type="button" class="${btnClass}" onclick="kanban.selectChoice(${index})">${this.escapeHtml(option)}</button>`;
+        }).join('');
         
         this.choiceDialogCallback = callback;
         dialog.classList.add('show');
@@ -2038,10 +2131,11 @@ class Kanvu {
     }
     
     selectChoice(index) {
-        if (this.choiceDialogCallback) {
-            this.choiceDialogCallback(index);
-        }
+        const cb = this.choiceDialogCallback;
         this.closeChoiceDialog();
+        if (cb) {
+            cb(index);
+        }
     }
 
     // Task Management
@@ -2461,19 +2555,13 @@ class Kanvu {
 
     renderRail() {
         const boards = document.getElementById('rail-boards');
-        const lanes = document.getElementById('rail-lanes');
-        if (!boards || !lanes) return;
+        if (!boards) return;
         boards.innerHTML = this.getOrderedBoardIds().map(id => {
             const b = this.savedBoards[id];
             const cur = id === this.currentBoardId;
             const name = this.escapeHtml(cur ? this.currentBoardName : b.name);
             const n = cur ? this.tasks.filter(t => !t.archived).length : (b.tasks || []).filter(t => !t.archived).length;
             return `<button class="rail-item${cur ? ' on' : ''}" ${cur ? '' : `onclick="kanban.switchToBoard('${id}')"`}><span class="g">${name}</span><em>${n}</em></button>`;
-        }).join('');
-        const sorted = [...this.columns].sort((a, b) => a.order - b.order);
-        lanes.innerHTML = sorted.map(c => {
-            const n = this.tasks.filter(t => t.column === c.id && !t.archived).length;
-            return `<div class="rail-item static"><span class="d" style="--c:${c.color || '#8A96AB'}"></span><span class="g">${this.escapeHtml(c.title)}</span><em>${n}</em></div>`;
         }).join('');
         const active = this.tasks.filter(t => !t.archived);
         const done = active.filter(t => t.progress >= 100).length;
@@ -2982,6 +3070,10 @@ class Kanvu {
     }
 
     closeAllModals() {
+        const wpModal = document.getElementById('wallpaper-modal');
+        if (wpModal && wpModal.classList.contains('show')) {
+            this.closeWallpaperModal();
+        }
         document.querySelectorAll('.modal').forEach(modal => {
             modal.classList.remove('show');
         });
@@ -3064,7 +3156,7 @@ class Kanvu {
                         <button class="modal-close" onclick="kanban.closeConfirmDialog()">×</button>
                     </div>
                     <div class="modal-body">
-                        <p id="confirm-dialog-message"></p>
+                        <p id="confirm-dialog-message" style="white-space:pre-line"></p>
                     </div>
                     <div class="modal-actions">
                         <button type="button" class="btn btn-secondary" onclick="kanban.closeConfirmDialog()">Cancel</button>
@@ -3072,6 +3164,9 @@ class Kanvu {
                     </div>
                 </div>
             `;
+            dialog.addEventListener('click', (e) => {
+                if (e.target === dialog) this.closeConfirmDialog();
+            });
             document.body.appendChild(dialog);
         }
         
@@ -3091,10 +3186,11 @@ class Kanvu {
     }
     
     submitConfirmDialog() {
-        if (this.confirmDialogCallback) {
-            this.confirmDialogCallback(true);
-        }
+        const cb = this.confirmDialogCallback;
         this.closeConfirmDialog();
+        if (cb) {
+            cb(true);
+        }
     }
     
     // Color Selection Functions

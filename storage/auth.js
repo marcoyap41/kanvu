@@ -1,3 +1,37 @@
+class LoadingIndicator {
+    constructor() {
+        this.count = 0;
+        this.bar = null;
+    }
+    _getBar() {
+        if (!this.bar && typeof document !== 'undefined') {
+            this.bar = document.getElementById('global-loader');
+            if (!this.bar && document.body) {
+                this.bar = document.createElement('div');
+                this.bar.id = 'global-loader';
+                this.bar.className = 'global-loader';
+                document.body.prepend(this.bar);
+            }
+        }
+        return this.bar;
+    }
+    start() {
+        this.count++;
+        const bar = this._getBar();
+        if (bar) bar.classList.add('active');
+    }
+    stop() {
+        this.count = Math.max(0, this.count - 1);
+        if (this.count === 0) {
+            const bar = this._getBar();
+            if (bar) bar.classList.remove('active');
+        }
+    }
+}
+if (typeof window !== 'undefined') {
+    window.loadingIndicator = window.loadingIndicator || new LoadingIndicator();
+}
+
 /**
  * AuthClient: talks to the backend's /auth routes and sends every API request with the access token.
  *
@@ -92,6 +126,7 @@ class AuthClient {
     // true = signed in, false = no valid session. Throws NETWORK if the server is unreachable.
     refresh() {
         if (!this._refreshing) {
+            if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.start();
             this._refreshing = (async () => {
                 let res;
                 try {
@@ -105,7 +140,10 @@ class AuthClient {
                 this.user = data.user;
                 this._setHint(true);
                 return true;
-            })().finally(() => { this._refreshing = null; });
+            })().finally(() => {
+                this._refreshing = null;
+                if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.stop();
+            });
         }
         return this._refreshing;
     }
@@ -113,45 +151,58 @@ class AuthClient {
     // ---- Authenticated API calls ----
     // Resolves to the parsed JSON body (null for 204). Throws Error with .code = NETWORK | AUTH | HTTP and .status.
     async request(method, path, body) {
-        const payload = body !== undefined ? JSON.stringify(body) : undefined; // serialized now, so later edits can't change what is sent
-        const send = async () => {
-            const headers = {};
-            if (payload !== undefined) headers['Content-Type'] = 'application/json';
-            if (this.accessToken) headers['Authorization'] = 'Bearer ' + this.accessToken;
-            try {
-                return await fetch(this.apiUrl + path, { method, headers, body: payload, credentials: 'include' });
-            } catch (e) {
-                throw this._error('Cannot reach the server', 'NETWORK');
-            }
-        };
+        if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.start();
+        try {
+            const payload = body !== undefined ? JSON.stringify(body) : undefined; // serialized now, so later edits can't change what is sent
+            const send = async () => {
+                const headers = {};
+                if (payload !== undefined) headers['Content-Type'] = 'application/json';
+                if (this.accessToken) headers['Authorization'] = 'Bearer ' + this.accessToken;
+                try {
+                    return await fetch(this.apiUrl + path, { method, headers, body: payload, credentials: 'include' });
+                } catch (e) {
+                    throw this._error('Cannot reach the server', 'NETWORK');
+                }
+            };
 
-        let res = await send();
-        if (res.status === 401) {
-            const renewed = await this.refresh();
-            if (!renewed) {
-                if (this.onSessionLost) this.onSessionLost();
-                throw this._error('Session expired. Please sign in again', 'AUTH', 401);
+            let res = await send();
+            if (res.status === 401) {
+                const renewed = await this.refresh();
+                if (!renewed) {
+                    if (this.onSessionLost) this.onSessionLost();
+                    throw this._error('Session expired. Please sign in again', 'AUTH', 401);
+                }
+                res = await send();
             }
-            res = await send();
+            if (!res.ok) throw await this._httpError(res);
+            if (res.status === 204) return null;
+            const text = await res.text();
+            return text ? JSON.parse(text) : null;
+        } finally {
+            if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.stop();
         }
-        if (!res.ok) throw await this._httpError(res);
-        if (res.status === 204) return null;
-        return res.json();
     }
 
     // ---- Internals ----
     // Unauthenticated POST to an /auth route. Resolves to the JSON body.
     async _publicCall(path, body) {
-        let res;
+        if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.start();
         try {
-            res = await fetch(this.apiUrl + path, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), credentials: 'include'
-            });
-        } catch (e) {
-            throw this._error('Cannot reach the server', 'NETWORK');
+            let res;
+            try {
+                res = await fetch(this.apiUrl + path, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), credentials: 'include'
+                });
+            } catch (e) {
+                throw this._error('Cannot reach the server', 'NETWORK');
+            }
+            if (!res.ok) throw await this._httpError(res);
+            if (res.status === 204) return null;
+            const text = await res.text();
+            return text ? JSON.parse(text) : null;
+        } finally {
+            if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.stop();
         }
-        if (!res.ok) throw await this._httpError(res);
-        return res.status === 204 ? null : res.json();
     }
 
     // Same, for routes that answer { accessToken, user } and set the refresh cookie

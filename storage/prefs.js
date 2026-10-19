@@ -136,6 +136,14 @@ class SettingsManager {
         this._debounceTimer = setTimeout(() => this._flushPatch(), 600);
     }
 
+    async flush() {
+        if (this._debounceTimer) {
+            clearTimeout(this._debounceTimer);
+            this._debounceTimer = null;
+        }
+        await this._flushPatch();
+    }
+
     async _flushPatch() {
         this._debounceTimer = null;
         if (!this._auth || Object.keys(this._pending).length === 0) return;

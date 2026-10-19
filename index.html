@@ -33,10 +33,6 @@
             <button class="rail-item plus" onclick="kanban.createNewBoard()">+ New board</button>
         </section>
         <section>
-            <div class="rail-head"><h3>Stages</h3></div>
-            <nav id="rail-lanes"></nav>
-        </section>
-        <section>
             <div class="rail-head"><h3>Display</h3></div>
             <div class="ctl">
                 <div class="ctl-label">Theme</div>
@@ -216,7 +212,7 @@
             <output id="stage-blur-val">10px</output>
         </div>
         <div class="modal-actions wp-actions">
-            <button type="button" class="btn btn-secondary wp-remove" id="wp-remove" onclick="kanban.removeWallpaper()">Remove</button>
+            <button type="button" class="btn btn-danger wp-remove" id="wp-remove" onclick="kanban.removeWallpaper()">Remove</button>
             <button type="button" class="btn btn-secondary" id="wp-choose" onclick="document.getElementById('wp-file').click()">Choose image</button>
             <button type="button" class="btn" id="wp-apply" onclick="kanban.saveWallpaper()" disabled>Apply</button>
         </div>

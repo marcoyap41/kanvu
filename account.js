@@ -279,6 +279,7 @@ class AccountUI {
         if (!this.verifyPendingEmail) return;
         const btn = document.getElementById('auth-resend');
         btn.disabled = true;
+        btn.classList.add('btn-loading');
         this.showVerifyError('');
         this.showVerifyOk('');
         try {
@@ -292,6 +293,8 @@ class AccountUI {
             } else {
                 btn.disabled = false;
             }
+        } finally {
+            btn.classList.remove('btn-loading');
         }
     }
 
@@ -311,17 +314,20 @@ class AccountUI {
 
         const btn = document.getElementById('auth-submit');
         btn.disabled = true;
+        btn.classList.add('btn-loading');
         this.showError('');
         try {
             if (this.authMode === 'register') {
                 const res = await this.auth.register(email, password, name);
                 btn.disabled = false;
+                btn.classList.remove('btn-loading');
                 this.showVerifyPending(res?.email || email, res?.expiresInMinutes || 15, 60);
                 return;
             }
             await this.auth.login(email, password);
         } catch (e) {
             btn.disabled = false;
+            btn.classList.remove('btn-loading');
             if (e.data && e.data.code === 'EMAIL_NOT_VERIFIED') {
                 this.showVerifyPending(
                     e.data.email || email,
@@ -335,6 +341,7 @@ class AccountUI {
             return;
         }
         btn.disabled = false;
+        btn.classList.remove('btn-loading');
         this.closeModal();
         await this.afterAuth();
     }

@@ -108,23 +108,28 @@ class ApiAdapter {
      * Handles 401 by refreshing the token once and retrying.
      */
     async _fetchBinary(method, path, body) {
-        const doFetch = async () => {
-            const headers = {};
-            if (this.auth.accessToken) headers['Authorization'] = 'Bearer ' + this.auth.accessToken;
-            const opts = { method, headers, credentials: 'include' };
-            if (body) opts.body = body;
-            return fetch(this.auth.apiUrl + path, opts);
-        };
-        let res = await doFetch();
-        if (res.status === 401) {
-            const renewed = await this.auth.refresh();
-            if (!renewed) {
-                if (this.auth.onSessionLost) this.auth.onSessionLost();
-                throw new Error('Session expired');
+        if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.start();
+        try {
+            const doFetch = async () => {
+                const headers = {};
+                if (this.auth.accessToken) headers['Authorization'] = 'Bearer ' + this.auth.accessToken;
+                const opts = { method, headers, credentials: 'include' };
+                if (body) opts.body = body;
+                return fetch(this.auth.apiUrl + path, opts);
+            };
+            let res = await doFetch();
+            if (res.status === 401) {
+                const renewed = await this.auth.refresh();
+                if (!renewed) {
+                    if (this.auth.onSessionLost) this.auth.onSessionLost();
+                    throw new Error('Session expired');
+                }
+                res = await doFetch();
             }
-            res = await doFetch();
+            return res;
+        } finally {
+            if (typeof window !== 'undefined' && window.loadingIndicator) window.loadingIndicator.stop();
         }
-        return res;
     }
 
     // GET /settings/wallpaper -> Blob, or null if no wallpaper is set (404)
