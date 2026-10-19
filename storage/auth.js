@@ -49,6 +49,7 @@ class AuthClient {
         this.onSessionLost = null; // set by the UI: called when the session can't be renewed
         this._refreshing = null;
         this.justVerified = false;
+        this.justOAuthSignedIn = false;
         this.verifyError = null;
         this.HINT_KEY = 'kanban-session'; // "this browser has signed in before", so guests never call the server on load
     }
@@ -68,6 +69,12 @@ class AuthClient {
     async restoreSession() {
         if (!this.enabled) return null;
         const hash = typeof location !== 'undefined' ? location.hash : '';
+        const authErrMatch = hash.match(/(?:^|[#&])auth_error=([^&]+)/);
+        if (authErrMatch) {
+            this.verifyError = decodeURIComponent(authErrMatch[1]);
+            history.replaceState(null, '', location.pathname + location.search);
+            return null;
+        }
         const verifyMatch = hash.match(/(?:^|[#&])verify=([^&]+)/);
         if (verifyMatch) {
             const token = decodeURIComponent(verifyMatch[1]);
@@ -83,8 +90,24 @@ class AuthClient {
             }
         }
         if (hash.includes('auth=success')) { // came back from Google/GitHub sign-in
+            const ticketMatch = hash.match(/(?:^|[#&])ticket=([^&]+)/);
             this._setHint(true);
             history.replaceState(null, '', location.pathname + location.search);
+            if (ticketMatch) {
+                try {
+                    const user = await this._authCall('/auth/oauth/exchange', {
+                        ticket: decodeURIComponent(ticketMatch[1]),
+                    });
+                    this.justOAuthSignedIn = true;
+                    return user;
+                } catch (e) {
+                    if (e.code === 'NETWORK') throw e;
+                    // Fall through to cookie-based refresh if ticket exchange failed
+                }
+            }
+            const ok = await this.refresh();
+            if (ok) this.justOAuthSignedIn = true;
+            return ok ? this.user : null;
         }
         if (!this._hint()) return null;
         const ok = await this.refresh();

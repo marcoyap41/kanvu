@@ -378,7 +378,8 @@ box-shadow:0 1px 3px rgba(0,0,0,.18)}
 .auth-divider{display:flex;align-items:center;gap:10px;margin:16px 0;font-size:12px;color:var(--mute)}
 .auth-divider::before,.auth-divider::after{content:"";flex:1;height:1px;background:var(--line)}
 .auth-oauth{display:grid;gap:8px}
-.auth-oauth .btn{width:100%}
+.auth-oauth .btn{width:100%;display:inline-flex;align-items:center;justify-content:center;gap:10px}
+.auth-oauth .btn svg{width:18px;height:18px;flex:none}
 .auth-switch{margin:14px 0 0;text-align:center}
 
 /* ---- Signed-out draft banner, startup screen, disabled autosave ---- */
@@ -427,6 +428,9 @@ box-shadow:0 1px 3px rgba(0,0,0,.18)}
     position: relative;
     color: transparent !important;
     pointer-events: none;
+}
+.btn.btn-loading svg {
+    opacity: 0;
 }
 .btn.btn-loading::after {
     content: "";
