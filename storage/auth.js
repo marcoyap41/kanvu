@@ -14,14 +14,17 @@ class AuthClient {
         this.user = null;
         this.onSessionLost = null; // set by the UI: called when the session can't be renewed
         this._refreshing = null;
+        this.justVerified = false;
+        this.verifyError = null;
         this.HINT_KEY = 'kanban-session'; // "this browser has signed in before", so guests never call the server on load
     }
 
     get enabled() { return !!this.apiUrl; }
 
-    // True when this browser signed in before (or is returning from Google/GitHub). Used to show a loading screen at startup.
+    // True when this browser signed in before, is returning from OAuth, or is opening an email verification link.
     hasSessionHint() {
-        const back = typeof location !== 'undefined' && location.hash.includes('auth=success');
+        const hash = typeof location !== 'undefined' ? location.hash : '';
+        const back = hash.includes('auth=success') || /(?:^|[#&])verify=[^&]+/.test(hash);
         return this._hint() || back;
     }
     get signedIn() { return !!this.user; }
@@ -31,6 +34,20 @@ class AuthClient {
     async restoreSession() {
         if (!this.enabled) return null;
         const hash = typeof location !== 'undefined' ? location.hash : '';
+        const verifyMatch = hash.match(/(?:^|[#&])verify=([^&]+)/);
+        if (verifyMatch) {
+            const token = decodeURIComponent(verifyMatch[1]);
+            history.replaceState(null, '', location.pathname + location.search);
+            try {
+                const user = await this.verifyEmail(token);
+                this.justVerified = true;
+                return user;
+            } catch (e) {
+                if (e.code === 'NETWORK') throw e;
+                this.verifyError = e.message || 'This verification link is invalid or has expired.';
+                return null;
+            }
+        }
         if (hash.includes('auth=success')) { // came back from Google/GitHub sign-in
             this._setHint(true);
             history.replaceState(null, '', location.pathname + location.search);
@@ -40,10 +57,23 @@ class AuthClient {
         return ok ? this.user : null;
     }
 
+    // Sign-up step 1: the server emails a verification link. No session yet.
+    // Resolves to { status: 'verification_sent', email, expiresInMinutes }.
     async register(email, password, name) {
-        return this._authCall('/auth/register', { email, password, name: name || undefined });
+        return this._publicCall('/auth/register', { email, password, name: name || undefined });
     }
 
+    // Sign-up step 2: the token from the emailed link (#verify=...). Creates the account and signs in.
+    async verifyEmail(token) {
+        return this._authCall('/auth/verify-email', { token });
+    }
+
+    // "Resend the email". Throws with .status 429 and .data.retryAfter (seconds) when rate limited.
+    async resendVerification(email) {
+        return this._publicCall('/auth/resend-verification', { email });
+    }
+
+    // Throws with .data.code === 'EMAIL_NOT_VERIFIED' for a sign-up whose link wasn't clicked yet (the server resends it)
     async login(email, password) {
         return this._authCall('/auth/login', { email, password });
     }
@@ -110,7 +140,8 @@ class AuthClient {
     }
 
     // ---- Internals ----
-    async _authCall(path, body) {
+    // Unauthenticated POST to an /auth route. Resolves to the JSON body.
+    async _publicCall(path, body) {
         let res;
         try {
             res = await fetch(this.apiUrl + path, {
@@ -120,7 +151,12 @@ class AuthClient {
             throw this._error('Cannot reach the server', 'NETWORK');
         }
         if (!res.ok) throw await this._httpError(res);
-        const data = await res.json();
+        return res.status === 204 ? null : res.json();
+    }
+
+    // Same, for routes that answer { accessToken, user } and set the refresh cookie
+    async _authCall(path, body) {
+        const data = await this._publicCall(path, body);
         this.accessToken = data.accessToken;
         this.user = data.user;
         this._setHint(true);
@@ -146,10 +182,13 @@ class AuthClient {
     // NestJS errors look like { statusCode, message: string | string[], error }
     async _httpError(res) {
         let message = `Request failed (${res.status})`;
+        let data = null;
         try {
-            const data = await res.json();
+            data = await res.json();
             if (data && data.message) message = Array.isArray(data.message) ? data.message.join(', ') : data.message;
         } catch (e) { /* no JSON body */ }
-        return this._error(message, res.status === 401 ? 'AUTH' : 'HTTP', res.status);
+        const err = this._error(message, res.status === 401 ? 'AUTH' : 'HTTP', res.status);
+        err.data = data;
+        return err;
     }
 }

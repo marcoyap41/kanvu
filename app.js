@@ -51,7 +51,10 @@ try {
 const kanban = new Kanvu({
     pickStorage: async () => {
         if (!auth.enabled) return makeDraft();
-        if (auth.hasSessionHint()) showStartup('Loading your boards...');
+        if (auth.hasSessionHint()) {
+            const isVerifying = typeof location !== 'undefined' && /(?:^|[#&])verify=[^&]+/.test(location.hash);
+            showStartup(isVerifying ? 'Verifying your email...' : 'Loading your boards...');
+        }
         try {
             const user = await auth.restoreSession();
             if (user) return new ApiAdapter(auth);

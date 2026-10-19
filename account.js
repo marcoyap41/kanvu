@@ -11,7 +11,9 @@ class AccountUI {
         this.kanban = kanban;
         this.auth = auth;
         this.makeDraft = makeDraft; // () => a draft adapter on this tab's sessionStorage
-        this.authMode = 'login'; // 'login' | 'register'
+        this.authMode = 'login'; // 'login' | 'register' | 'verify'
+        this.verifyPendingEmail = '';
+        this._resendTimer = null;
         this._expiredShown = false;
     }
 
@@ -29,16 +31,46 @@ class AccountUI {
 
         document.getElementById('account-signout').addEventListener('click', () => this.signOut());
         document.addEventListener('click', (e) => { if (!e.target.closest('#account-wrap')) this.closeMenu(); });
+        window.addEventListener('hashchange', () => this.handleVerifyHash());
         this.auth.onSessionLost = () => this.sessionExpired();
         this.render();
 
-        // Came back signed in (OAuth redirect keeps the draft in this tab): offer to add it to the account
+        if (this.auth.justVerified && this.auth.user) {
+            this.auth.justVerified = false;
+            this.kanban.showToast(`Email verified! Signed in as ${this.auth.user.email}`, 'success');
+        } else if (this.auth.verifyError) {
+            const err = this.auth.verifyError;
+            this.auth.verifyError = null;
+            this.kanban.showToast(err, 'error');
+            this.openModal('login');
+            this.showError(err);
+        }
+
+        // Came back signed in (OAuth redirect or verification link keeps the draft in this tab): offer to add it to the account
         if (this.inAccountMode()) {
             try {
                 const status = await this.offerImport();
                 if (status === 'imported') await this.kanban.setStorage(this.kanban.storage); // reload with the new boards
                 if (status === 'imported' || status === 'discarded' || status === 'empty') this.makeDraft().clear();
             } catch (e) { console.error(e); }
+        }
+    }
+
+    async handleVerifyHash() {
+        const hash = typeof location !== 'undefined' ? location.hash : '';
+        const match = hash.match(/(?:^|[#&])verify=([^&]+)/);
+        if (!match) return;
+        const token = decodeURIComponent(match[1]);
+        history.replaceState(null, '', location.pathname + location.search);
+        try {
+            await this.auth.verifyEmail(token);
+            this.closeModal();
+            await this.afterAuth();
+        } catch (e) {
+            const msg = e.message || 'This verification link is invalid or has expired.';
+            this.kanban.showToast(msg, 'error');
+            this.openModal('login');
+            this.showError(msg);
         }
     }
 
@@ -88,27 +120,37 @@ class AccountUI {
                     <button type="button" class="modal-close" id="auth-close" aria-label="Close">×</button>
                 </div>
                 <div class="modal-body">
-                    <p id="auth-note" hidden></p>
-                    <div class="form-group" id="auth-name-group" hidden>
-                        <label class="form-label" for="auth-name">Name (optional)</label>
-                        <input class="form-input" id="auth-name" type="text" maxlength="50" autocomplete="name">
+                    <div id="auth-form-view">
+                        <p id="auth-note" hidden></p>
+                        <div class="form-group" id="auth-name-group" hidden>
+                            <label class="form-label" for="auth-name">Name (optional)</label>
+                            <input class="form-input" id="auth-name" type="text" maxlength="50" autocomplete="name">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="auth-email">Email</label>
+                            <input class="form-input" id="auth-email" type="email" autocomplete="email">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="auth-password">Password</label>
+                            <input class="form-input" id="auth-password" type="password">
+                        </div>
+                        <p class="auth-error" id="auth-error" role="alert" hidden></p>
+                        <button type="button" class="btn auth-submit" id="auth-submit"></button>
+                        <div class="auth-divider"><span>or</span></div>
+                        <div class="auth-oauth">
+                            <button type="button" class="btn btn-secondary" data-oauth="google">Continue with Google</button>
+                            <button type="button" class="btn btn-secondary" data-oauth="github">Continue with GitHub</button>
+                        </div>
+                        <p class="auth-switch"><button type="button" class="link" id="auth-switch"></button></p>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label" for="auth-email">Email</label>
-                        <input class="form-input" id="auth-email" type="email" autocomplete="email">
+                    <div id="auth-verify-view" hidden>
+                        <p id="auth-verify-text" style="margin:0 0 10px;font-size:13.5px;line-height:1.5;color:var(--ink)"></p>
+                        <p id="auth-verify-sub" style="margin:0 0 16px;font-size:12.5px;line-height:1.45;color:var(--mute)"></p>
+                        <p class="auth-error" id="auth-verify-error" role="alert" hidden></p>
+                        <p id="auth-verify-ok" style="margin:0 0 12px;font-size:13px;color:#2F9E44" hidden></p>
+                        <button type="button" class="btn auth-submit" id="auth-resend">Resend verification email</button>
+                        <p class="auth-switch"><button type="button" class="link" id="auth-back-login">Back to sign in</button></p>
                     </div>
-                    <div class="form-group">
-                        <label class="form-label" for="auth-password">Password</label>
-                        <input class="form-input" id="auth-password" type="password">
-                    </div>
-                    <p class="auth-error" id="auth-error" role="alert" hidden></p>
-                    <button type="button" class="btn auth-submit" id="auth-submit"></button>
-                    <div class="auth-divider"><span>or</span></div>
-                    <div class="auth-oauth">
-                        <button type="button" class="btn btn-secondary" data-oauth="google">Continue with Google</button>
-                        <button type="button" class="btn btn-secondary" data-oauth="github">Continue with GitHub</button>
-                    </div>
-                    <p class="auth-switch"><button type="button" class="link" id="auth-switch"></button></p>
                 </div>
             </div>`;
         document.body.appendChild(d);
@@ -116,6 +158,12 @@ class AccountUI {
         d.querySelector('#auth-close').addEventListener('click', () => this.closeModal());
         d.querySelector('#auth-submit').addEventListener('click', () => this.submit());
         d.querySelector('#auth-switch').addEventListener('click', () => this.setAuthMode(this.authMode === 'login' ? 'register' : 'login'));
+        d.querySelector('#auth-resend').addEventListener('click', () => this.resendVerification());
+        d.querySelector('#auth-back-login').addEventListener('click', () => {
+            this._clearResendTimer();
+            this.setAuthMode('login');
+            if (this.verifyPendingEmail) document.getElementById('auth-email').value = this.verifyPendingEmail;
+        });
         d.querySelectorAll('[data-oauth]').forEach(b => b.addEventListener('click', () => this.oauth(b.dataset.oauth)));
         d.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') this.submit(); });
     }
@@ -123,6 +171,7 @@ class AccountUI {
     openModal(mode = 'login', note = '') {
         this.buildModal();
         this.closeMenu();
+        this._clearResendTimer();
         this.setAuthMode(mode);
         const n = document.getElementById('auth-note');
         n.textContent = note;
@@ -134,6 +183,7 @@ class AccountUI {
     }
 
     closeModal() {
+        this._clearResendTimer();
         const m = document.getElementById('auth-modal');
         if (m) m.classList.remove('show');
         this._expiredShown = false;
@@ -142,12 +192,107 @@ class AccountUI {
     setAuthMode(mode) {
         this.authMode = mode;
         const reg = mode === 'register';
+        const formView = document.getElementById('auth-form-view');
+        const verifyView = document.getElementById('auth-verify-view');
+        if (formView) formView.hidden = false;
+        if (verifyView) verifyView.hidden = true;
         document.getElementById('auth-title').textContent = reg ? 'Create account' : 'Sign in';
         document.getElementById('auth-submit').textContent = reg ? 'Create account' : 'Sign in';
         document.getElementById('auth-switch').textContent = reg ? 'I already have an account' : 'Create an account';
         document.getElementById('auth-name-group').hidden = !reg;
         document.getElementById('auth-password').autocomplete = reg ? 'new-password' : 'current-password';
         this.showError('');
+    }
+
+    showVerifyPending(email, expiresInMinutes = 15, cooldownSeconds = 60, customLead = '') {
+        this.buildModal();
+        this.authMode = 'verify';
+        this.verifyPendingEmail = email;
+        document.getElementById('auth-form-view').hidden = true;
+        document.getElementById('auth-verify-view').hidden = false;
+        document.getElementById('auth-title').textContent = 'Check your email';
+
+        const textEl = document.getElementById('auth-verify-text');
+        textEl.textContent = '';
+        if (customLead) {
+            textEl.textContent = customLead;
+        } else {
+            textEl.append('We sent a verification link to ');
+            const strong = document.createElement('strong');
+            strong.textContent = email;
+            textEl.append(strong, '. Click the link in that email to activate your account and sign in.');
+        }
+
+        document.getElementById('auth-verify-sub').textContent =
+            `The link expires in ${expiresInMinutes} minutes. Check your spam folder if you don't see it.`;
+        this.showVerifyError('');
+        this.showVerifyOk('');
+        this._startResendCooldown(cooldownSeconds);
+    }
+
+    _clearResendTimer() {
+        if (this._resendTimer) {
+            clearInterval(this._resendTimer);
+            this._resendTimer = null;
+        }
+    }
+
+    _startResendCooldown(seconds) {
+        this._clearResendTimer();
+        const btn = document.getElementById('auth-resend');
+        if (!btn) return;
+        let rem = Math.max(0, Math.ceil(Number(seconds) || 0));
+        const update = () => {
+            if (rem > 0) {
+                btn.disabled = true;
+                btn.textContent = `Resend verification email (${rem}s)`;
+            } else {
+                btn.disabled = false;
+                btn.textContent = 'Resend verification email';
+                this._clearResendTimer();
+            }
+        };
+        update();
+        if (rem > 0) {
+            this._resendTimer = setInterval(() => {
+                rem -= 1;
+                update();
+            }, 1000);
+        }
+    }
+
+    showVerifyError(message) {
+        const e = document.getElementById('auth-verify-error');
+        if (!e) return;
+        e.textContent = message;
+        e.hidden = !message;
+    }
+
+    showVerifyOk(message) {
+        const e = document.getElementById('auth-verify-ok');
+        if (!e) return;
+        e.textContent = message;
+        e.hidden = !message;
+    }
+
+    async resendVerification() {
+        if (!this.verifyPendingEmail) return;
+        const btn = document.getElementById('auth-resend');
+        btn.disabled = true;
+        this.showVerifyError('');
+        this.showVerifyOk('');
+        try {
+            const res = await this.auth.resendVerification(this.verifyPendingEmail);
+            this.showVerifyOk('A new verification link has been sent to your email.');
+            this._startResendCooldown(res?.retryAfter || 60);
+        } catch (e) {
+            this.showVerifyError(e.message || 'Could not resend verification email.');
+            if (e.data && e.data.retryAfter) {
+                this._startResendCooldown(e.data.retryAfter);
+            } else {
+                btn.disabled = false;
+            }
+        }
     }
 
     showError(message) {
@@ -168,11 +313,25 @@ class AccountUI {
         btn.disabled = true;
         this.showError('');
         try {
-            if (this.authMode === 'register') await this.auth.register(email, password, name);
-            else await this.auth.login(email, password);
+            if (this.authMode === 'register') {
+                const res = await this.auth.register(email, password, name);
+                btn.disabled = false;
+                this.showVerifyPending(res?.email || email, res?.expiresInMinutes || 15, 60);
+                return;
+            }
+            await this.auth.login(email, password);
         } catch (e) {
-            this.showError(e.message);
             btn.disabled = false;
+            if (e.data && e.data.code === 'EMAIL_NOT_VERIFIED') {
+                this.showVerifyPending(
+                    e.data.email || email,
+                    15,
+                    e.data.retryAfter || 60,
+                    e.message
+                );
+                return;
+            }
+            this.showError(e.message);
             return;
         }
         btn.disabled = false;
